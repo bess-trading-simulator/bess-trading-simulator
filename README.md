@@ -6,11 +6,7 @@ The project is intentionally public and educational. It is designed as a portfol
 
 ## Live Demo
 
-Deploy with Vercel and add the live URL here:
-
-```text
-https://your-vercel-url.vercel.app
-```
+https://trading-sim-two.vercel.app/
 
 ## What It Teaches
 
@@ -93,4 +89,3 @@ This project demonstrates:
 - Simulation state management and domain modelling.
 - Data visualisation with Recharts.
 - Practical understanding of BESS trading concepts and GB power market workflows.
-
