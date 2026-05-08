@@ -17,8 +17,8 @@ export default function AboutProject() {
               <button className="btn btn-icon" onClick={() => setOpen(false)}><X size={18} /></button>
             </div>
             <p>
-              This is a public educational simulator for learning GB battery energy storage trading concepts.
-              It is not trading advice, dispatch software, or a full market replica.
+              An educational simulator focused on core trading decisions: when to charge, discharge, or wait.
+              Not a market replica, operational trading software, or intended for live trading decisions.
             </p>
             <div className="about-grid">
               <div>
@@ -27,11 +27,11 @@ export default function AboutProject() {
               </div>
               <div>
                 <strong>Simplified</strong>
-                <span>Order books, fees, collateral, full BM dispatch, ancillary service obligations, and degradation economics.</span>
+                <span>Market mechanics are simplified and order books, fees, and collateral are not modelled.</span>
               </div>
               <div>
                 <strong>Data</strong>
-                <span>Uses public Elexon BMRS data where available and synthetic fallback scenarios for training.</span>
+                <span>Loads actual GB settlement prices, day-ahead forecasts, and NIV from the Elexon BMRS API. Falls back to synthetic data if unavailable.</span>
               </div>
             </div>
           </div>
