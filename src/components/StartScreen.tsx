@@ -56,7 +56,7 @@ export default function StartScreen({ onStartTraining, onOpenSandbox }: Props) {
         <div className="start-card">
           <ShieldCheck size={18} />
           <h2>Public Demo</h2>
-          <p>An educational simulator for learning how battery trading works. Not a market replica, operational trading software, or intended for live trading decisions.</p>
+          <p>An educational simulator for learning how battery trading works. Not a market replica, operational trading software, or intended for live trading decisions. Some prices, forecasts, or variables may occasionally show as 0 if the Elexon API is unavailable or returns incomplete data. This is a known issue being resolved.</p>
         </div>
       </section>
     </main>
