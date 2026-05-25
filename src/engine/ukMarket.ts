@@ -21,6 +21,8 @@ export interface DayView {
 
 export interface TradePosition {
   period: number;
+  /** UTC midnight ms of the delivery day for this position */
+  deliveryDay: number;
   market: 'da' | 'id' | 'bm' | 'spot';
   action: 'charge' | 'discharge';
   mw: number;
@@ -87,24 +89,162 @@ export function generateGBDayAhead(seed: number, isWeekday: boolean, windPct: nu
   return prices;
 }
 
-export function generateSIPOutturn(daPrices: number[], seed: number): number[] {
-  const rng = mulberry32(seed + 9999);
-  return daPrices.map((da, sp) => {
-    const hour = sp / 2;
-    let deviation = (rng() - 0.5) * 15;
-    if (hour >= 16 && hour <= 20) deviation *= 1.8;
-    if (rng() < 0.03) deviation += (rng() > 0.5 ? 1 : -1) * (50 + rng() * 150);
-    return Math.round((da + deviation) * 100) / 100;
-  });
+/**
+ * Educational imbalance settlement price.
+ * Derived from NIV so the visible signal matches the trade outcome:
+ *  - Linear coupling at 0.15 £/MWh per MW of NIV (inverse)
+ *  - Beyond ±500 MW a stress term kicks in (system runs out of cheap balancing
+ *    actions): long → SIP crashes harder negative, short → scarcity spike.
+ * Decoupled from raw Elexon SIP, so charging into a long system pays you and
+ * discharging into a long system costs you, regardless of what real SIP did.
+ */
+export function imbalanceSettlementPrice(daPrice: number, niv: number): number {
+  const linear = -niv * 0.15;
+  const stressMw = Math.max(0, Math.abs(niv) - 500);
+  const stress = stressMw * 0.18 * (niv > 0 ? -1 : 1);
+  return Math.round((daPrice + linear + stress) * 100) / 100;
 }
 
-export function generateNIV(daPrices: number[], sipPrices: number[], seed: number): number[] {
-  const rng = mulberry32(seed + 5555);
-  return daPrices.map((da, i) => {
-    const sip = sipPrices[i];
-    const baseNiv = (da - sip) * 3 + (rng() - 0.5) * 200;
-    return Math.round(baseNiv);
-  });
+export interface ImbalanceDay {
+  niv: number[];
+  windForecast: number[];
+  windOutturn: number[];
+  demandForecast: number[];
+  demandOutturn: number[];
+  solarForecast: number[];
+  solarOutturn: number[];
+}
+
+/** Solar generation profile (MW): daytime bell 06:00–18:00, zero at night. */
+function solarProfile(sp: number, peak: number): number {
+  const hour = sp / 2;
+  return Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI)) * peak;
+}
+
+/**
+ * Generate a day of imbalance drivers as INDEPENDENT, observable signals that
+ * together produce NIV — so a trader builds skill by *combining* partial reads
+ * (and judging conviction by how well they agree) rather than reading one
+ * number:
+ *   - wind error (outturn − forecast): surplus → system long  (+NIV)
+ *   - demand error (outturn − forecast): above forecast → system short (−NIV)
+ *   - residual noise: unobservable → the forecast uncertainty / slippage
+ * NIV = wind_surplus·0.6 − demand_excess·0.7 + residual.
+ * Wind error is an autocorrelated random walk (skill = read the trend);
+ * demand error has a time-of-day bias (evening peaks tend to run short).
+ */
+export function generateImbalanceDay(seed: number, isWeekday: boolean): ImbalanceDay {
+  const rng = mulberry32(seed + 4242);
+  const windForecast: number[] = [];
+  const windOutturn: number[] = [];
+  const demandForecast: number[] = [];
+  const demandOutturn: number[] = [];
+  const solarForecast: number[] = [];
+  const solarOutturn: number[] = [];
+  const niv: number[] = [];
+
+  let windErr = (rng() - 0.5) * 300;     // MW, autocorrelated
+  const windBase = 4000 + rng() * 9000;  // MW, day's wind level
+  const solarPeak = 2500 + rng() * 5000; // MW, day's clear-sky peak
+
+  for (let sp = 0; sp < 48; sp++) {
+    const hour = sp / 2;
+
+    // Demand profile (MW): daytime hump + evening peak − overnight trough
+    const demandShape = 28000
+      + 9000 * Math.max(0, Math.sin(((hour - 6) / 24) * Math.PI * 2))
+      + (hour >= 16 && hour <= 20 ? 6000 : 0)
+      - (hour >= 1 && hour <= 5 ? 6000 : 0);
+    const dFc = Math.round(demandShape * (isWeekday ? 1 : 0.92));
+    const demandBias = hour >= 16 && hour <= 20 ? 250 : hour >= 1 && hour <= 5 ? -150 : 0;
+    const dErr = Math.round(demandBias + (rng() - 0.5) * 400);
+
+    // Wind: slow random walk around a sinusoidal base
+    windErr += (rng() - 0.5) * 300;
+    windErr *= 0.85; // mean-revert
+    const wFc = Math.round(windBase + 2000 * Math.sin(sp / 6));
+    const wErr = Math.round(windErr);
+
+    // Solar: clear-sky bell with cloud noise (does not feed NIV here — wind/demand do)
+    const sFc = Math.round(solarProfile(sp, solarPeak));
+    const sErr = sFc > 0 ? Math.round((rng() - 0.5) * 0.25 * solarPeak) : 0;
+
+    const residual = (rng() - 0.5) * 150;
+    const nivVal = Math.round(wErr * 0.6 - dErr * 0.7 + residual);
+
+    windForecast.push(Math.max(0, wFc));
+    windOutturn.push(Math.max(0, wFc + wErr));
+    demandForecast.push(dFc);
+    demandOutturn.push(dFc + dErr);
+    solarForecast.push(sFc);
+    solarOutturn.push(Math.max(0, sFc + sErr));
+    niv.push(nivVal);
+  }
+  return { niv, windForecast, windOutturn, demandForecast, demandOutturn, solarForecast, solarOutturn };
+}
+
+/**
+ * Invert a curated NIV curve into observable wind/demand/solar forecasts whose
+ * errors *explain* that NIV — so a scenario with a given NIV shows the player a
+ * consistent story (system long ⇒ wind surplus + demand below forecast). Solar
+ * is shown for context but, like the synthetic day, is folded into wind here.
+ */
+export function deriveForecastsFromNiv(
+  niv: number[],
+  seed: number,
+  isWeekday: boolean,
+): Omit<ImbalanceDay, 'niv'> {
+  const rng = mulberry32(seed + 7777);
+  const windForecast: number[] = [];
+  const windOutturn: number[] = [];
+  const demandForecast: number[] = [];
+  const demandOutturn: number[] = [];
+  const solarForecast: number[] = [];
+  const solarOutturn: number[] = [];
+
+  const windBase = 4000 + rng() * 9000;
+  const solarPeak = 2500 + rng() * 5000;
+
+  for (let sp = 0; sp < 48; sp++) {
+    const hour = sp / 2;
+    const n = niv[sp] ?? 0;
+
+    const demandShape = 28000
+      + 9000 * Math.max(0, Math.sin(((hour - 6) / 24) * Math.PI * 2))
+      + (hour >= 16 && hour <= 20 ? 6000 : 0)
+      - (hour >= 1 && hour <= 5 ? 6000 : 0);
+    const dFc = Math.round(demandShape * (isWeekday ? 1 : 0.92));
+    // demand above forecast ⇒ short ⇒ −NIV, so explain +NIV with demand below forecast
+    const dErr = Math.round(-n * 0.35 + (rng() - 0.5) * 180);
+
+    const wFc = Math.round(windBase + 2000 * Math.sin(sp / 6));
+    // wind surplus ⇒ long ⇒ +NIV
+    const wErr = Math.round(n * 0.55 + (rng() - 0.5) * 180);
+
+    const sFc = Math.round(solarProfile(sp, solarPeak));
+    const sErr = sFc > 0 ? Math.round((rng() - 0.5) * 0.25 * solarPeak) : 0;
+
+    windForecast.push(Math.max(0, wFc));
+    windOutturn.push(Math.max(0, wFc + wErr));
+    demandForecast.push(dFc);
+    demandOutturn.push(dFc + dErr);
+    solarForecast.push(sFc);
+    solarOutturn.push(Math.max(0, sFc + sErr));
+  }
+  return { windForecast, windOutturn, demandForecast, demandOutturn, solarForecast, solarOutturn };
+}
+
+/**
+ * The single canonical SIP outturn curve: the NIV-derived settlement price per
+ * SP, identical to what a trade settles at. Used by spot/imbalance settlement,
+ * the intraday SIP line, and post-trade analysis — one source of truth so the
+ * price you settle at always matches the price you're graded against.
+ *
+ * (Even with live Elexon data we derive SIP from the real NIV rather than using
+ * Elexon's raw SIP, so the NIV signal the player reads always drives outcomes.)
+ */
+export function generateSIPOutturn(daPrices: number[], niv: number[]): number[] {
+  return daPrices.map((da, sp) => imbalanceSettlementPrice(da, niv[sp] ?? 0));
 }
 
 // Comprehensive analysis: compare ALL player activity against SIP outturn

@@ -10,11 +10,11 @@ interface Props {
 }
 
 function socColor(pct: number): string {
-  if (pct < 15) return '#ef4444';
-  if (pct < 30) return '#f97316';
-  if (pct < 70) return '#22c55e';
-  if (pct < 90) return '#3b82f6';
-  return '#a855f7';
+  if (pct < 15) return '#ff5f62';
+  if (pct < 30) return '#ff874b';
+  if (pct < 70) return '#00a15d';
+  if (pct < 90) return '#007be2';
+  return '#c7b4f8';
 }
 
 export default function BatteryStatus({ battery, onConfigure }: Props) {

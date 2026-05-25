@@ -3,16 +3,18 @@ import { HISTORICAL_DAYS } from '../data/historicalDays';
 import type { HistoricalDay } from '../data/historicalDays';
 import { fetchHistoricalDay } from '../engine/elexonApi';
 import { getCachedDay, cacheElexonDay } from '../engine/persistence';
-import { Calendar, X, Play, BookOpen, Download, Loader } from 'lucide-react';
+import { Calendar, X, Play, BookOpen, Download, Loader, Radio, Check } from 'lucide-react';
 
 interface Props {
   onSelectScenario: (day: HistoricalDay) => void;
+  onSelectLive?: () => void;
+  activeId?: string;
 }
 
 const difficultyColors: Record<string, string> = {
-  easy: '#22c55e',
-  medium: '#eab308',
-  hard: '#ef4444',
+  easy: '#00a15d',
+  medium: '#ff874b',
+  hard: '#ff5f62',
 };
 
 function scenarioFocus(day: HistoricalDay): string {
@@ -26,7 +28,7 @@ function scenarioFocus(day: HistoricalDay): string {
   return 'Practise choosing charge, discharge, or wait';
 }
 
-export default function ScenarioSelector({ onSelectScenario }: Props) {
+export default function ScenarioSelector({ onSelectScenario, onSelectLive, activeId = 'live' }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [selected, setSelected] = useState<HistoricalDay | null>(null);
   const [tab, setTab] = useState<'bundled' | 'elexon'>('bundled');
@@ -51,6 +53,13 @@ export default function ScenarioSelector({ onSelectScenario }: Props) {
 
   const handlePlay = (day: HistoricalDay) => {
     onSelectScenario(day);
+    setIsOpen(false);
+    setSelected(null);
+    setFetchedDay(null);
+  };
+
+  const handleLive = () => {
+    onSelectLive?.();
     setIsOpen(false);
     setSelected(null);
     setFetchedDay(null);
@@ -144,10 +153,23 @@ export default function ScenarioSelector({ onSelectScenario }: Props) {
                   Curated training scenarios based on real GB market patterns.
                 </p>
                 <div className="scenario-grid">
+                  {onSelectLive && (
+                    <button className={`scenario-card ${activeId === 'live' ? 'active' : ''}`} onClick={handleLive}>
+                      <div className="scenario-card-header">
+                        <span className="scenario-date">Today</span>
+                        {activeId === 'live' && <span className="scenario-active-tag"><Check size={11} /> Active</span>}
+                        <span className="scenario-difficulty" style={{ color: 'var(--charge)' }}>live</span>
+                      </div>
+                      <h3><Radio size={14} /> Live market data</h3>
+                      <p>The latest real GB market day from Elexon — live prices, NIV, wind, demand and solar.</p>
+                      <div className="scenario-focus">Trade today's real market</div>
+                    </button>
+                  )}
                   {HISTORICAL_DAYS.map(day => (
-                    <button key={day.id} className="scenario-card" onClick={() => setSelected(day)}>
+                    <button key={day.id} className={`scenario-card ${day.id === activeId ? 'active' : ''}`} onClick={() => setSelected(day)}>
                       <div className="scenario-card-header">
                         <span className="scenario-date">{day.date}</span>
+                        {day.id === activeId && <span className="scenario-active-tag"><Check size={11} /> Active</span>}
                         <span className="scenario-difficulty" style={{ color: difficultyColors[day.difficulty] }}>
                           {day.difficulty}
                         </span>

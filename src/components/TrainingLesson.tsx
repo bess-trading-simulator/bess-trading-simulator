@@ -543,6 +543,7 @@ function LessonMain({ props, lessonId, focus, assessmentMode, level }: {
             dayAhead={state.dayAhead}
             battery={state.battery}
             currentPrice={state.currentPrice?.price ?? 0}
+            currentTime={state.clock.currentTime}
             currentHour={currentHour}
             onIntradayCharge={props.onIntradayCharge}
             onIntradayDischarge={props.onIntradayDischarge}

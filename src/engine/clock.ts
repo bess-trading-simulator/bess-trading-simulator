@@ -116,3 +116,16 @@ export function hoursUntilGateClosure(currentTime: number): number {
   const gate = getGateClosureTime(currentTime);
   return Math.max(0, Math.round((gate - currentTime) / HOUR_MS * 10) / 10);
 }
+
+/** UTC midnight ms for the calendar day containing `time` */
+export function getUtcDayStart(time: number): number {
+  const d = new Date(time);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0);
+}
+
+export function formatDeliveryDay(time: number | null | undefined): string {
+  if (!time || !Number.isFinite(time)) return '—';
+  const d = new Date(time);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' });
+}
