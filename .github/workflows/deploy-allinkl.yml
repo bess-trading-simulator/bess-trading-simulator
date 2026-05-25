@@ -1,0 +1,32 @@
+name: Deploy to All-Inkl
+
+# Manual deploy: builds the app and uploads dist/ to All-Inkl over FTPS.
+# Trigger it from the GitHub "Actions" tab → "Deploy to All-Inkl" → "Run workflow".
+# Required repo secrets: FTP_HOST, FTP_USER, FTP_PASSWORD, FTP_TARGET_DIR
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Upload dist/ via FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          local-dir: ./dist/
+          server-dir: ${{ secrets.FTP_TARGET_DIR }}
