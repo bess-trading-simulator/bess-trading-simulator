@@ -1,5 +1,5 @@
 import type { SpeedPreset } from '../engine/types';
-import { formatDate, formatHour } from '../engine/clock';
+import { formatHour, getSettlementPeriod } from '../engine/clock';
 import { Pause, Play, RotateCcw, SkipForward } from 'lucide-react';
 
 interface Props {
@@ -10,9 +10,11 @@ interface Props {
   onSetSpeed: (s: SpeedPreset) => void;
   onStepForward: () => void;
   onReset: () => void;
+  /** Hide speed select + reset (moved into the header menu) */
+  compact?: boolean;
 }
 
-const speedOptions: { key: SpeedPreset; label: string }[] = [
+export const speedOptions: { key: SpeedPreset; label: string }[] = [
   { key: 'manual', label: 'Manual' },
   { key: 'slow', label: 'Slow' },
   { key: 'normal', label: 'Normal' },
@@ -20,45 +22,45 @@ const speedOptions: { key: SpeedPreset; label: string }[] = [
   { key: 'ultra', label: 'Ultra' },
 ];
 
-export default function MarketClock({ currentTime, isPaused, speed, onTogglePause, onSetSpeed, onStepForward, onReset }: Props) {
+export default function MarketClock({ currentTime, isPaused, speed, onTogglePause, onSetSpeed, onStepForward, onReset, compact = false }: Props) {
+  const d = new Date(currentTime);
+  const weekday = d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' }).toUpperCase();
+  const dayMonth = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+
   return (
     <div className="market-clock">
-      <div className="clock-time">
-        <div className="clock-date">{formatDate(currentTime)}</div>
-        <div className="clock-hour">{formatHour(currentTime)}</div>
-      </div>
-      <div className="clock-status">
+      <span className="mc-sp">SP{getSettlementPeriod(currentTime)}</span>
+      <span className="mc-date">{weekday} {dayMonth}</span>
+      <span className="mc-time">{formatHour(currentTime)}</span>
+      <span className="mc-status">
         <span className={`status-dot ${isPaused || speed === 'manual' ? 'paused' : 'running'}`} />
-        <span className="status-text">
-          {isPaused ? 'PAUSED' : speed === 'manual' ? 'MANUAL' : 'RUNNING'}
-        </span>
-      </div>
-      <div className="clock-controls">
-        <button className="btn btn-icon" onClick={onTogglePause} title={isPaused ? 'Resume' : 'Pause'}>
-          {isPaused ? <Play size={16} /> : <Pause size={16} />}
+        <span className="mc-status-text">{isPaused ? 'Paused' : speed === 'manual' ? 'Manual' : 'Live'}</span>
+      </span>
+      <span className="mc-controls">
+        <button className="mc-btn" onClick={onTogglePause} title={isPaused ? 'Resume' : 'Pause'}>
+          {isPaused ? <Play size={15} /> : <Pause size={15} />}
         </button>
-        <button
-          className="btn btn-icon btn-step"
-          onClick={onStepForward}
-          title="Step forward 1 hour"
-        >
-          <SkipForward size={16} />
+        <button className="mc-btn" onClick={onStepForward} title="Step forward 1 settlement period (30 min)">
+          <SkipForward size={15} />
         </button>
-        <div className="speed-controls">
-          {speedOptions.map(s => (
-            <button
-              key={s.key}
-              className={`btn btn-speed ${speed === s.key ? 'active' : ''}`}
-              onClick={() => onSetSpeed(s.key)}
+        {!compact && (
+          <>
+            <select
+              className="input speed-select"
+              value={speed}
+              onChange={(e) => onSetSpeed(e.target.value as SpeedPreset)}
+              title="Speed"
             >
-              {s.label}
+              {speedOptions.map(s => (
+                <option key={s.key} value={s.key}>{s.label}</option>
+              ))}
+            </select>
+            <button className="mc-btn" onClick={onReset} title="Reset">
+              <RotateCcw size={15} />
             </button>
-          ))}
-        </div>
-        <button className="btn btn-icon btn-danger" onClick={onReset} title="Reset">
-          <RotateCcw size={16} />
-        </button>
-      </div>
+          </>
+        )}
+      </span>
     </div>
   );
 }

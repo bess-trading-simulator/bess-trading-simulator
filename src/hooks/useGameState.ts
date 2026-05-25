@@ -11,19 +11,37 @@ import type { BatteryConfig } from '../engine/battery';
 import type { HistoricalDay } from '../data/historicalDays';
 import { fetchLatestDay, fetchDayData } from '../engine/elexonApi';
 import type { ElexonDayData } from '../engine/elexonApi';
-import { getGateClosureTime, getNextDeliveryDay } from '../engine/clock';
+import { getGateClosureTime, getNextDeliveryDay, getUtcDayStart } from '../engine/clock';
+import { generateSIPOutturn } from '../engine/ukMarket';
 import { autoSave, loadAutoSave, clearAutoSave, needsRefresh, cacheElexonDay } from '../engine/persistence';
 
 export function useGameState() {
   const [state, setState] = useState<GameState>(() => {
     const saved = loadAutoSave();
     if (saved) {
-      // Always start paused at slow speed — don't restore mid-run state
+      // Migrate old saves: backfill missing deliveryDay fields and drop stale positions.
+      const currentTime = saved.clock.currentTime;
+      const currentDayStart = getUtcDayStart(currentTime);
+      const migratedDeliveryDay = saved.dayAhead?.deliveryDay ?? getNextDeliveryDay(currentTime);
+      const migratedSchedule = (saved.dayAhead?.playerSchedule ?? [])
+        .filter((p) => p && typeof p.period === 'number')
+        .map((p) => ({
+          ...p,
+          deliveryDay: typeof p.deliveryDay === 'number' ? p.deliveryDay : currentDayStart,
+        }))
+        .filter((p) => !p.delivered && p.deliveryDay >= currentDayStart);
+
       return {
         ...saved,
         clock: { ...saved.clock, isPaused: true, speed: 'slow' },
-        tutorial: { currentStep: 0, isActive: true, completed: false },
+        tutorial: { currentStep: 0, isActive: false, completed: true },
         bm: saved.bm ?? { offers: [], accepted: [] },
+        dayAhead: {
+          ...saved.dayAhead,
+          deliveryDay: migratedDeliveryDay,
+          nextDeliveryDay: saved.dayAhead?.nextDeliveryDay ?? migratedDeliveryDay,
+          playerSchedule: migratedSchedule,
+        },
       };
     }
     return createGameState();
@@ -63,9 +81,10 @@ export function useGameState() {
         results: [],
         gateClosureTime: getGateClosureTime(t),
         isAuctionOpen: true,
+        deliveryDay: getNextDeliveryDay(t),
         nextDeliveryDay: getNextDeliveryDay(t),
         forecastPrices: dayData.daPrices,
-        sipOutturn: dayData.sipPrices,
+        sipOutturn: generateSIPOutturn(dayData.daPrices, dayData.niv),
         niv: dayData.niv,
         demandForecast: dayData.demandForecast,
         windForecast: dayData.windForecast,
@@ -133,7 +152,7 @@ export function useGameState() {
           dayAhead: {
             ...prev.dayAhead,
             forecastPrices: dayData.daPrices.some(p => p !== 0) ? dayData.daPrices : prev.dayAhead.forecastPrices,
-            sipOutturn: dayData.sipPrices.some(p => p !== 0) ? dayData.sipPrices : prev.dayAhead.sipOutturn,
+            sipOutturn: dayData.daPrices.some(p => p !== 0) ? generateSIPOutturn(dayData.daPrices, dayData.niv) : prev.dayAhead.sipOutturn,
             niv: dayData.niv.some(v => v !== 0) ? dayData.niv : prev.dayAhead.niv,
             demandForecast: dayData.demandForecast.some(v => v > 0) ? dayData.demandForecast : prev.dayAhead.demandForecast,
             windForecast: dayData.windForecast.some(v => v > 0) ? dayData.windForecast : prev.dayAhead.windForecast,
@@ -241,6 +260,24 @@ export function useGameState() {
     setDataSource(day.id.startsWith('elexon-') ? 'live' : 'synthetic');
   }, []);
 
+  // Explicitly (re)load the latest real Elexon day — used when the player picks
+  // "Live" in the launcher, so a stale autosave / previous scenario can't linger.
+  const loadLive = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    setDataSource('loading');
+    fetchLatestDay()
+      .then(dayData => {
+        cacheElexonDay(dayData.date, dayData);
+        applyElexonData(dayData);
+        setDataSource('live');
+        console.log(`Loaded real Elexon data for ${dayData.date}`);
+      })
+      .catch(err => {
+        console.warn('Elexon API unavailable, using synthetic data:', err.message);
+        setDataSource('synthetic');
+      });
+  }, []);
+
   const configureBattery = useCallback((config: Partial<BatteryConfig>) => {
     setState(prev => reconfigureBattery(prev, config));
   }, []);
@@ -270,7 +307,7 @@ export function useGameState() {
   return {
     state, dataSource, togglePause, setSpeed, stepForward,
     chargeBattery, dischargeBattery, placeDayAheadBids,
-    intradayCharge, intradayDischarge, submitBmOffer, playScenario,
+    intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, configureBattery,
     loadSavedState, reset,
   };

@@ -11,7 +11,7 @@ interface Props {
 }
 
 const verdictColors: Record<string, string> = {
-  good: '#22c55e', ok: '#eab308', bad: '#ef4444', missed: '#f97316', neutral: '#6b7280',
+  good: 'var(--green)', ok: 'var(--yellow)', bad: 'var(--red)', missed: 'var(--orange)', neutral: 'var(--text-muted)',
 };
 const verdictLabels: Record<string, string> = {
   good: 'GOOD TRADE', ok: 'COULD IMPROVE', bad: 'BAD TRADE', missed: 'MISSED', neutral: 'IDLE OK',
@@ -36,16 +36,22 @@ export default function PostTradeAnalysis({ dayAhead, analysis }: Props) {
         <div className="analysis-chart">
           <h4>DA Forecast vs SIP Outturn</h4>
           <ResponsiveContainer width="100%" height={200}>
-            <ComposedChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis dataKey="sp" stroke="#888" fontSize={10} interval={3} />
-              <YAxis stroke="#888" fontSize={11} />
-              <Tooltip formatter={(value: unknown, name: unknown) => {
-                if (value == null) return ['—', String(name)];
-                return [`£${Number(value).toFixed(2)}`, name === 'da' ? 'DA Forecast' : 'SIP Outturn'];
-              }} />
-              <Bar dataKey="da" fill="#3b82f6" fillOpacity={0.3} name="DA Forecast" />
-              <Line type="monotone" dataKey="sip" stroke="#ef4444" strokeWidth={2} dot={false} name="SIP Outturn" />
+            <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 5, left: -8 }} barCategoryGap="28%">
+              <CartesianGrid strokeDasharray="2 4" stroke="#2c3245" strokeOpacity={0.6} vertical={false} />
+              <XAxis dataKey="sp" stroke="#6b7280" fontSize={10} interval={3} tickLine={false} axisLine={false} />
+              <YAxis stroke="#6b7280" fontSize={10} width={36} tickLine={false} axisLine={false} />
+              <Tooltip
+                cursor={{ stroke: '#9272f5', strokeWidth: 1, strokeDasharray: '2 3' }}
+                contentStyle={{ background: '#0f1420', border: '1px solid #1f2535', borderRadius: '6px', color: '#e5e7eb', fontSize: 11, padding: '6px 8px' }}
+                labelStyle={{ color: '#6b7280', fontSize: 10, marginBottom: 2 }}
+                itemStyle={{ color: '#e5e7eb', padding: 0 }}
+                formatter={(value: unknown, name: unknown) => {
+                  if (value == null) return ['—', String(name)];
+                  return [`£${Number(value).toFixed(2)}`, name === 'da' ? 'DA Forecast' : 'SIP Outturn'];
+                }}
+              />
+              <Bar dataKey="da" fill="#9ca3af" fillOpacity={0.4} name="DA Forecast" radius={[2, 2, 0, 0]} />
+              <Line type="monotone" dataKey="sip" stroke="#ff5f62" strokeWidth={2.5} dot={false} name="SIP Outturn" connectNulls={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -73,7 +79,7 @@ export default function PostTradeAnalysis({ dayAhead, analysis }: Props) {
 
       {/* Score */}
       <div className="analysis-score-banner">
-        <div className="score-grade" style={{ borderColor: score >= 50 ? '#22c55e' : score > 0 ? '#eab308' : '#6b7280' }}>
+        <div className="score-grade" style={{ borderColor: score >= 50 ? 'var(--green)' : score > 0 ? 'var(--yellow)' : 'var(--text-muted)' }}>
           <span className="grade-letter">{grade}</span>
           <span className="grade-pct">{score}%</span>
         </div>
@@ -83,8 +89,8 @@ export default function PostTradeAnalysis({ dayAhead, analysis }: Props) {
             <span className={totalPlayerRevenue >= 0 ? 'positive' : 'negative'}>
               You: {totalPlayerRevenue >= 0 ? '+' : ''}£{totalPlayerRevenue.toFixed(2)}
             </span>
-            <span style={{ color: '#9ca3af' }}>Optimal: £{totalOptimalRevenue.toFixed(2)}</span>
-            <span style={{ color: '#f97316' }}>Missed: £{totalMissedRevenue.toFixed(2)}</span>
+            <span style={{ color: 'var(--text-muted)' }}>Optimal: £{totalOptimalRevenue.toFixed(2)}</span>
+            <span style={{ color: 'var(--orange)' }}>Missed: £{totalMissedRevenue.toFixed(2)}</span>
           </div>
         </div>
       </div>
@@ -93,16 +99,22 @@ export default function PostTradeAnalysis({ dayAhead, analysis }: Props) {
       <div className="analysis-chart">
         <h4>DA Forecast vs SIP Outturn <TermTooltip term="Forecast vs Outturn" /> <HelpIcon text="Blue = forecast. Red = actual. The gap is where money was made or lost." /></h4>
         <ResponsiveContainer width="100%" height={200}>
-          <ComposedChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-            <XAxis dataKey="sp" stroke="#888" fontSize={10} interval={3} />
-            <YAxis stroke="#888" fontSize={11} />
-            <Tooltip formatter={(value: unknown, name: unknown) => {
-              if (value == null) return ['—', String(name)];
-              return [`£${Number(value).toFixed(2)}`, name === 'da' ? 'DA Forecast' : 'SIP Outturn'];
-            }} />
-            <Bar dataKey="da" fill="#3b82f6" fillOpacity={0.3} name="DA Forecast" />
-            <Line type="monotone" dataKey="sip" stroke="#ef4444" strokeWidth={2} dot={false} name="SIP Outturn" />
+          <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 5, left: -8 }} barCategoryGap="28%">
+            <CartesianGrid strokeDasharray="2 4" stroke="#2c3245" strokeOpacity={0.6} vertical={false} />
+            <XAxis dataKey="sp" stroke="#6b7280" fontSize={10} interval={3} tickLine={false} axisLine={false} />
+            <YAxis stroke="#6b7280" fontSize={10} width={36} tickLine={false} axisLine={false} />
+            <Tooltip
+              cursor={{ stroke: '#9272f5', strokeWidth: 1, strokeDasharray: '2 3' }}
+              contentStyle={{ background: '#0f1420', border: '1px solid #1f2535', borderRadius: '6px', color: '#e5e7eb', fontSize: 11, padding: '6px 8px' }}
+              labelStyle={{ color: '#6b7280', fontSize: 10, marginBottom: 2 }}
+              itemStyle={{ color: '#e5e7eb', padding: 0 }}
+              formatter={(value: unknown, name: unknown) => {
+                if (value == null) return ['—', String(name)];
+                return [`£${Number(value).toFixed(2)}`, name === 'da' ? 'DA Forecast' : 'SIP Outturn'];
+              }}
+            />
+            <Bar dataKey="da" fill="#9ca3af" fillOpacity={0.4} name="DA Forecast" radius={[2, 2, 0, 0]} />
+            <Line type="monotone" dataKey="sip" stroke="#ff5f62" strokeWidth={2.5} dot={false} name="SIP Outturn" connectNulls={false} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
@@ -149,7 +161,7 @@ export default function PostTradeAnalysis({ dayAhead, analysis }: Props) {
                 <span>DA: £{p.daPrice.toFixed(2)}</span>
                 <span>→</span>
                 <span>SIP: £{p.sipPrice.toFixed(2)}</span>
-                {p.nivValue !== 0 && <span style={{ color: '#9ca3af' }}>NIV: {p.nivValue > 0 ? '+' : ''}{p.nivValue}</span>}
+                {p.nivValue !== 0 && <span style={{ color: 'var(--text-muted)' }}>NIV: {p.nivValue > 0 ? '+' : ''}{p.nivValue}</span>}
               </div>
               {p.playerAction !== 'idle' && (
                 <div className="analysis-item-trade">

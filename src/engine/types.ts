@@ -74,7 +74,7 @@ export const SPEED_MS: Record<SpeedPreset, number> = {
   ultra: 100,
 };
 
-export type AppView = 'spot' | 'dayahead' | 'intraday' | 'analysis';
+export type AppView = 'imbalance' | 'intraday' | 'dayahead' | 'forecast' | 'analysis';
 
 export interface HourlyPrice {
   timestamp: number;
@@ -128,6 +128,8 @@ export interface DayAheadState {
   results: AuctionResult[];
   gateClosureTime: number | null;
   isAuctionOpen: boolean;
+  /** UTC midnight ms of the day this auction's bids will deliver on */
+  deliveryDay: number;
   nextDeliveryDay: number;
   forecastPrices: number[]; // 48 half-hourly DA prices
   sipOutturn: number[]; // 48 half-hourly SIP outturns (revealed as time passes)

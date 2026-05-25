@@ -52,7 +52,7 @@ export default function PriceChart({ priceHistory, currentPrice, demandForecast 
         <h3>Electricity Price <TermTooltip term="Spread" /></h3>
         <HelpIcon text="The spot electricity price by settlement period. Use fixed zones as rough context, but make decisions from relative moves, recent volatility, SoC, and the Market Signal panel." />
         <div className="price-display">
-          <span className="current-price" style={{ color: change > 0 ? '#ef4444' : change < 0 ? '#22c55e' : '#eab308' }}>
+          <span className="current-price" style={{ color: change > 0 ? 'var(--red)' : change < 0 ? 'var(--green)' : 'var(--yellow)' }}>
             £{lastPrice.toFixed(2)}
           </span>
           <span className="price-unit">/MWh</span>
@@ -66,39 +66,44 @@ export default function PriceChart({ priceHistory, currentPrice, demandForecast 
           <AreaChart data={data} margin={{ top: 5, right: 20, bottom: 20, left: 15 }}>
             <defs>
               <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                <stop offset="5%" stopColor="#ff5f62" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#ff5f62" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+            <CartesianGrid strokeDasharray="2 4" stroke="#2c3245" strokeOpacity={0.6} vertical={false} />
             <XAxis
               dataKey="time"
-              stroke="#888"
+              stroke="#6b7280"
               fontSize={11}
               interval={tickInterval}
               height={45}
-              label={{ value: 'Half-hourly Settlement Period', position: 'insideBottom', offset: -5, fill: '#888', fontSize: 11 }}
+              tickLine={false}
+              axisLine={false}
+              label={{ value: 'Half-hourly Settlement Period', position: 'insideBottom', offset: -5, fill: '#6b7280', fontSize: 11 }}
             />
             <YAxis
-              stroke="#888"
+              stroke="#6b7280"
               fontSize={11}
+              tickLine={false}
+              axisLine={false}
               domain={[Math.floor(minPrice - 5), Math.ceil(maxPrice + 5)]}
-              label={{ value: '£/MWh', angle: -90, position: 'insideLeft', offset: 5, fill: '#888', fontSize: 11 }}
+              label={{ value: '£/MWh', angle: -90, position: 'insideLeft', offset: 5, fill: '#6b7280', fontSize: 11 }}
             />
             <Tooltip
-              contentStyle={{ background: '#1a1a2e', border: '1px solid #333', borderRadius: '8px' }}
-              labelStyle={{ color: '#ccc' }}
+              cursor={{ stroke: '#9272f5', strokeWidth: 1, strokeDasharray: '2 3' }}
+              contentStyle={{ background: '#0f1420', border: '1px solid #1f2535', borderRadius: '6px', color: '#e5e7eb', fontSize: 11, padding: '6px 8px' }}
+              labelStyle={{ color: '#6b7280', fontSize: 10 }}
               formatter={(value: unknown) => [`£${Number(value).toFixed(2)}/MWh`, 'Price']}
             />
-            <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+            <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="2 4" />
             <Area
               type="monotone"
               dataKey="price"
-              stroke="#3b82f6"
-              strokeWidth={2}
+              stroke="#ff5f62"
+              strokeWidth={2.5}
               fill="url(#priceGradient)"
               dot={false}
-              activeDot={{ r: 4, fill: '#3b82f6' }}
+              activeDot={{ r: 4, fill: '#ff5f62' }}
             />
           </AreaChart>
         </ResponsiveContainer>

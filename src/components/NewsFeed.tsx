@@ -16,11 +16,11 @@ const categoryIcons: Record<string, React.ReactNode> = {
 };
 
 const categoryColors: Record<string, string> = {
-  weather: '#3b82f6',
-  outage: '#ef4444',
-  demand: '#f97316',
-  renewable: '#22c55e',
-  policy: '#a855f7',
+  weather: '#007be2',
+  outage: '#ff5f62',
+  demand: '#ff874b',
+  renewable: '#00a15d',
+  policy: '#c7b4f8',
 };
 
 export default function NewsFeed({ events }: Props) {

@@ -44,9 +44,9 @@ export default function SocForecast({ battery, dayAhead }: Props) {
           <XAxis dataKey="sp" stroke="#888" fontSize={9} interval={5} />
           <YAxis stroke="#888" fontSize={11} domain={[0, 100]} />
           <Tooltip formatter={(value: unknown) => [`${Number(value).toFixed(1)}%`, 'SoC']} />
-          <ReferenceLine y={battery.config.minSocPct} stroke="#ef4444" strokeDasharray="3 3" />
-          <ReferenceLine y={battery.config.maxSocPct} stroke="#ef4444" strokeDasharray="3 3" />
-          <Line type="monotone" dataKey="socPct" stroke="#22c55e" strokeWidth={2} dot={false} />
+          <ReferenceLine y={battery.config.minSocPct} stroke="#ff5f62" strokeDasharray="3 3" />
+          <ReferenceLine y={battery.config.maxSocPct} stroke="#ff5f62" strokeDasharray="3 3" />
+          <Line type="monotone" dataKey="socPct" stroke="#00a15d" strokeWidth={2} dot={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>
