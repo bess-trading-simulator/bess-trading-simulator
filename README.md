@@ -6,7 +6,7 @@ It's not a market replica or trading software. Market mechanics are simplified a
 
 ## Live Demo
 
-https://trading-sim-two.vercel.app/
+https://bess-trading-simulator.com
 
 ## What It Covers
 
