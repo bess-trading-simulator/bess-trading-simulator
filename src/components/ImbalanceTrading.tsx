@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { GameState } from '../engine/types';
 import { MarketType, OrderSide } from '../engine/types';
 import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay } from '../engine/clock';
-import { getMaxChargeableMw, getMaxDischargeableMw } from '../engine/battery';
+import { deviationRoom, findEntry } from '../engine/settlement';
 import { imbalanceSettlementPrice } from '../engine/ukMarket';
 import HelpIcon from './HelpIcon';
 import {
@@ -87,7 +87,7 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
 }
 
 export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props) {
-  const { battery, dayAhead, currentPrice, clock } = state;
+  const { dayAhead, currentPrice, clock } = state;
   // 0-indexed current SP for array access (getSettlementPeriod returns 1-48).
   const currentSp = getSettlementPeriod(clock.currentTime) - 1;
   const todayDay = getUtcDayStart(clock.currentTime);
@@ -152,19 +152,20 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
     : longVotes === 1 && shortVotes === 1 ? { dir: 'mixed', level: 'mixed' }
     : { dir: 'flat', level: 'flat' };
 
-  // Once the SP is revealed, show the actual settle (from the actual NIV).
-  const currentActualSettle = currentSpRevealed ? imbalanceSettlementPrice(daHere, nivActual) : null;
+  // Once the SP is revealed, show the actual settled SIP.
+  const currentActualSettle = currentSpRevealed ? dayAhead.sipOutturn[currentSp] : null;
 
-  const maxCharge = getMaxChargeableMw(battery);
-  const maxDischarge = getMaxDischargeableMw(battery);
+  // You deviate from your contracted (DA + ID) position in the running SP. The
+  // room is limited by power (incl. what the contract already dispatches) and SoC.
+  const spEntry = findEntry(state.ledger, todayDay, currentSp);
+  const contractedMw = spEntry?.contractedMw ?? 0;
+  const deliveredMw = spEntry?.deliveredMw ?? 0;
+  const room = deviationRoom(state, todayDay, currentSp);
+  const maxCharge = room.charge;
+  const maxDischarge = room.discharge;
 
-  // One imbalance trade per SP — check if today's SPOT trades already include this SP
-  const alreadyTradedThisSp = state.trades.some((t) => {
-    if (t.marketType !== MarketType.SPOT) return false;
-    const tDate = new Date(t.timestamp);
-    const tSp = tDate.getUTCHours() * 2 + (tDate.getUTCMinutes() >= 30 ? 1 : 0);
-    return tSp === currentSp && getUtcDayStart(t.timestamp) === todayDay;
-  });
+  // One deliberate deviation per SP.
+  const alreadyTradedThisSp = Math.abs(spEntry?.deviationMw ?? 0) > 0.01;
 
   // Signed slider: negative = charge, positive = discharge
   const [target, setTarget] = useState(0);
@@ -626,8 +627,13 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
                       : `Discharge ${targetClamped.toFixed(0)} MW`}
                 </span>
                 <span className="im-slider-cap muted">
-                  cap ±{Math.round(Math.max(maxCharge, maxDischarge))} MW
+                  room ↓{Math.round(maxCharge)} / ↑{Math.round(maxDischarge)} MW
                 </span>
+              </div>
+              <div className="im-slider-cap muted" style={{ marginTop: 4 }}>
+                Contract this SP: {contractedMw === 0 ? 'none' : `${contractedMw > 0 ? 'sell' : 'buy'} ${Math.abs(contractedMw).toFixed(0)} MW`}
+                {contractedMw !== 0 && Math.abs(deliveredMw - contractedMw) > 0.5 && ` · only ${Math.abs(deliveredMw).toFixed(0)} MW deliverable`}
+                {' '}· your move = deviation, settled at SIP
               </div>
             </div>
 
@@ -659,7 +665,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
                 disabled={Math.abs(targetClamped) < 0.1 || alreadyTradedThisSp}
               >
                 {alreadyTradedThisSp
-                  ? 'Already traded this SP'
+                  ? `Deviation set: ${(spEntry?.deviationMw ?? 0) > 0 ? '+' : ''}${(spEntry?.deviationMw ?? 0).toFixed(0)} MW`
                   : targetClamped < 0
                     ? <><ArrowDown size={14} /> Deliver in current SP</>
                     : targetClamped > 0

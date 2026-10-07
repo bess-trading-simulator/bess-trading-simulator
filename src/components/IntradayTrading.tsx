@@ -1,553 +1,351 @@
-import { useState } from 'react';
-import type { DayAheadState } from '../engine/types';
-import type { BatteryState } from '../engine/battery';
-import { getMaxChargeableMw, getMaxDischargeableMw } from '../engine/battery';
-import { getUtcDayStart, formatDeliveryDay, firstIntradayTradableSp } from '../engine/clock';
+import { useMemo, useState } from 'react';
+import type { GameState, IdOrderType } from '../engine/types';
+import { OrderSide } from '../engine/types';
+import { getUtcDayStart, getSettlementPeriod, formatDeliveryDay, ID_GATE_CLOSURE_MS } from '../engine/clock';
+import {
+  buildBook, isProductOpen, netPositionMw, orderRoomMw, productStart, productRef,
+} from '../engine/intradayBook';
+import type { PlaceOrderInput, OrderBook } from '../engine/intradayBook';
 import HelpIcon from './HelpIcon';
 import {
-  ComposedChart, Bar, Line, Scatter, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine, Cell,
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
-import { ArrowDown, ArrowUp, Clock } from 'lucide-react';
-import { getIntradayPrice } from '../engine/intradayPricing';
-import TermTooltip from './TermTooltip';
+import { Clock, X } from 'lucide-react';
 
 interface Props {
-  dayAhead: DayAheadState;
-  battery: BatteryState;
-  currentPrice: number;
-  currentTime: number;
-  currentHour: number;
-  onIntradayCharge: (sp: number, mw: number) => void;
-  onIntradayDischarge: (sp: number, mw: number) => void;
+  state: GameState;
+  onPlaceOrder: (input: PlaceOrderInput) => void;
+  onCancelOrder: (orderId: string) => void;
 }
 
-export default function IntradayTrading({
-  dayAhead, battery, currentPrice, currentTime,
-  onIntradayCharge, onIntradayDischarge,
-}: Props) {
-  const [selectedSp, setSelectedSp] = useState<number | null>(null);
-  const [mw, setMw] = useState(String(battery.config.powerRatingMw));
-  const [hoveredSp, setHoveredSp] = useState<number | null>(null);
+const spLabel = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
+const fmt = (v: number | undefined | null, d = 2) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(d));
 
-  const { forecastPrices, sipOutturn, revealedPeriods, playerSchedule } = dayAhead;
+const TYPE_HELP: Record<IdOrderType, string> = {
+  market: 'Market: take whatever liquidity is in the book now (walks the levels, you pay the spread). Unfilled rest is cancelled.',
+  limit: 'Limit: fills immediately up to your price if the book crosses it; the rest RESTS in the book and may fill later (at your limit) — or never.',
+  ioc: 'Immediate-or-Cancel: like limit, but whatever can’t fill right now is cancelled.',
+  fok: 'Fill-or-Kill: fills the FULL quantity at or better than your limit right now, otherwise nothing.',
+};
 
-  const todayDay = getUtcDayStart(currentTime);
-  // ID gate closure: an SP can only be traded until 1h before it starts (T-60).
-  const firstTradableSp = firstIntradayTradableSp(currentTime);
-
-  // Intraday prices are tradable only for live/future periods. Settled periods show SIP instead.
-  const idPrices = forecastPrices.map((_, sp) => {
-    if (sp < revealedPeriods) return null;
-    return getIntradayPrice({ forecastPrices, sipOutturn, revealedPeriods, currentPrice, period: sp });
-  });
-
-  // Aggregate today's scheduled positions per SP for chart + table
-  type SpPlan = { chargeMw: number; dischargeMw: number; netMw: number; avgPrice: number; positions: typeof playerSchedule };
-  const planBySp: Record<number, SpPlan> = {};
-  for (const pos of playerSchedule) {
-    if (pos.deliveryDay !== todayDay) continue;
-    const slot = planBySp[pos.period] ?? { chargeMw: 0, dischargeMw: 0, netMw: 0, avgPrice: 0, positions: [] };
-    if (pos.action === 'charge') slot.chargeMw += pos.mw;
-    else slot.dischargeMw += pos.mw;
-    slot.positions.push(pos);
-    planBySp[pos.period] = slot;
+function vwapEstimate(book: OrderBook | null, side: OrderSide, qty: number, limit: number | null) {
+  if (!book) return { mw: 0, price: 0 };
+  const levels = side === OrderSide.BUY ? book.asks : book.bids;
+  let left = qty, cash = 0, mw = 0;
+  for (const l of levels) {
+    if (left <= 0) break;
+    if (limit !== null && (side === OrderSide.BUY ? l.price > limit : l.price < limit)) break;
+    const take = Math.min(left, l.mw);
+    cash += take * l.price; mw += take; left -= take;
   }
-  for (const sp in planBySp) {
-    const s = planBySp[sp];
-    s.netMw = s.dischargeMw - s.chargeMw;
-    const totalMw = s.positions.reduce((a, p) => a + p.mw, 0);
-    s.avgPrice = totalMw > 0
-      ? s.positions.reduce((a, p) => a + p.mw * p.price, 0) / totalMw
-      : 0;
-  }
+  return { mw, price: mw > 0 ? cash / mw : 0 };
+}
 
-  // Project SoC across upcoming periods given the current schedule.
-  // `socAtEntry[sp]` = SoC% at the *start* of period sp (before that SP's trades apply).
-  const capacity = battery.config.capacityMwh;
+export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: Props) {
+  const { dayAhead, battery, intraday, clock, nextDay } = state;
+  const now = clock.currentTime;
+  const today = getUtcDayStart(now);
+  const tomorrowOpen = !dayAhead.isAuctionOpen && nextDay.day !== today;
+  const [dayChoice, setDayChoice] = useState<'today' | 'tomorrow'>('today');
+  const day = dayChoice === 'tomorrow' && tomorrowOpen ? nextDay.day : today;
+  const [selected, setSelected] = useState<number | null>(null);
+  const [side, setSide] = useState<OrderSide>(OrderSide.BUY);
+  const [type, setType] = useState<IdOrderType>('limit');
+  const [qty, setQty] = useState('10');
+  const [limit, setLimit] = useState('');
+
+  const currentSp = getSettlementPeriod(now) - 1;
+  const P = battery.config.powerRatingMw;
+
+  const rows = useMemo(() => Array.from({ length: 48 }, (_, sp) => {
+    const open = isProductOpen(state, day, sp);
+    const book = open ? buildBook(state, day, sp) : null;
+    const ref = productRef(state, day, sp);
+    const net = netPositionMw(state, day, sp);
+    const delivered = day === today && sp < currentSp;
+    const status = open ? 'open' : delivered ? 'delivered' : day === today && sp === currentSp ? 'delivering' : 'closed';
+    return { sp, open, book, da: ref?.da ?? (day === today ? dayAhead.forecastPrices[sp] : nextDay.daClearing[sp]), net, status };
+  }), [state, day, today, currentSp, dayAhead.forecastPrices, nextDay.daClearing]);
+
+  const sel = selected !== null ? rows[selected] : null;
+  const selBook = sel?.book ?? null;
+  const qtyNum = Number(qty);
+  const limitNum = limit.trim() === '' ? NaN : Number(limit);
+  const room = sel ? orderRoomMw(state, day, sel.sp, side) : 0;
+  const est = vwapEstimate(selBook, side, qtyNum || 0, type === 'market' ? null : (Number.isFinite(limitNum) ? limitNum : null));
+  const gateMs = sel ? productStart(day, sel.sp) - ID_GATE_CLOSURE_MS - now : 0;
+
+  const choose = (sp: number) => {
+    setSelected(sp === selected ? null : sp);
+    const b = rows[sp].book;
+    if (b) setLimit((side === OrderSide.BUY ? b.bids[0]?.price ?? b.mid : b.asks[0]?.price ?? b.mid).toFixed(2));
+  };
+
+  const place = () => {
+    if (!sel || !sel.open) return;
+    onPlaceOrder({
+      deliveryDay: day,
+      period: sel.sp,
+      side,
+      type,
+      qtyMw: qtyNum,
+      limitPrice: type === 'market' ? null : limitNum,
+    });
+  };
+
+  // SoC projection for TODAY through the net contracted position per SP.
+  const cap = battery.config.capacityMwh;
   const eff = battery.config.efficiencyPct / 100;
-  const socAtEntry: (number | null)[] = new Array(48).fill(null);
-  const socAtExit: (number | null)[] = new Array(48).fill(null);
-  {
-    let socMwh = battery.currentSocMwh;
-    for (let sp = revealedPeriods; sp < 48; sp++) {
-      socAtEntry[sp] = (socMwh / capacity) * 100;
-      const plan = planBySp[sp];
-      if (plan) {
-        socMwh += plan.chargeMw * 0.5 * eff;
-        socMwh -= plan.dischargeMw * 0.5;
-        socMwh = Math.max(0, Math.min(capacity, socMwh));
-      }
-      socAtExit[sp] = (socMwh / capacity) * 100;
+  const socBySp: (number | null)[] = new Array(48).fill(null);
+  if (day === today) {
+    let soc = battery.currentSocMwh;
+    for (let sp = currentSp + 1; sp < 48; sp++) {
+      const net = netPositionMw(state, today, sp);
+      soc = net > 0 ? soc - Math.min(net, P) * 0.5 : soc + Math.min(-net, P) * 0.5 * eff;
+      soc = Math.max(0, Math.min(cap, soc));
+      socBySp[sp] = (soc / cap) * 100;
     }
   }
 
-  const chartData = forecastPrices.map((da, sp) => {
-    const plan = planBySp[sp];
-    const livePrice = idPrices[sp];
-    const settledPrice = sp < revealedPeriods ? sipOutturn[sp] : null;
-    // Y-position for plan markers: prefer the trade's avg price, else SIP/ID/DA price as fallback
-    const markerY = plan && plan.avgPrice > 0
-      ? plan.avgPrice
-      : (settledPrice ?? livePrice ?? da);
-    return {
-      sp: `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`,
-      spIdx: sp,
-      da,
-      id: livePrice,
-      sip: settledPrice,
-      isFuture: sp > revealedPeriods,
-      isSelected: sp === selectedSp,
-      isHovered: sp === hoveredSp,
-      chargeMw: plan?.chargeMw ?? 0,
-      dischargeMw: plan?.dischargeMw ?? 0,
-      chargeMarker: plan && plan.chargeMw > 0 ? markerY : null,
-      dischargeMarker: plan && plan.dischargeMw > 0 ? markerY : null,
-      socPct: socAtExit[sp],
-    };
-  });
+  const chartData = rows.map(r => ({
+    sp: spLabel(r.sp),
+    da: r.da,
+    mid: r.book?.mid ?? null,
+    sip: day === today && r.sp < dayAhead.revealedPeriods ? dayAhead.sipOutturn[r.sp] : null,
+    net: r.net,
+    soc: socBySp[r.sp],
+  }));
 
-  const maxCharge = getMaxChargeableMw(battery);
-  const maxDischarge = getMaxDischargeableMw(battery);
-  const vol = Math.min(Number(mw) || 0, battery.config.powerRatingMw);
-  const selectedPlan = selectedSp !== null ? planBySp[selectedSp] : undefined;
-  const selectedDa = selectedSp !== null ? forecastPrices[selectedSp] : 0;
-  const selectedId = selectedSp !== null ? (idPrices[selectedSp] ?? currentPrice) : currentPrice;
-  // ID price minus DA forecast — not a bid–ask spread (no order book yet).
-  const spread = selectedId - selectedDa;
-  const socEntryAtSelected = selectedSp !== null ? socAtEntry[selectedSp] : null;
-  const socExitAtSelected = selectedSp !== null ? socAtExit[selectedSp] : null;
+  const dayOrders = intraday.orders.filter(o => o.deliveryDay >= today);
+  const working = dayOrders.filter(o => o.status === 'working' || o.status === 'partial');
+  const history = [...dayOrders].filter(o => o.status !== 'working' && o.status !== 'partial').reverse().slice(0, 8);
+  const fills = intraday.fills.filter(f => f.deliveryDay >= today).slice(-10).reverse();
+  const idCashToday = intraday.fills
+    .filter(f => f.deliveryDay === today)
+    .reduce((a, f) => a + (f.side === OrderSide.SELL ? 1 : -1) * f.mw * 0.5 * f.price, 0);
 
-  const handleCharge = () => {
-    if (selectedSp === null || vol <= 0 || selectedSp < firstTradableSp) return;
-    onIntradayCharge(selectedSp, Math.min(vol, maxCharge));
-    setSelectedSp(null);
-  };
-
-  const handleDischarge = () => {
-    if (selectedSp === null || vol <= 0 || selectedSp < firstTradableSp) return;
-    onIntradayDischarge(selectedSp, Math.min(vol, maxDischarge));
-    setSelectedSp(null);
-  };
-
-  const plannedSpList = Object.keys(planBySp)
-    .map((k) => Number(k))
-    .sort((a, b) => a - b);
-
-  // KPI aggregates
-  const todayChargeMwh = plannedSpList.reduce((s, sp) => s + planBySp[sp].chargeMw * 0.5, 0);
-  const todayDischargeMwh = plannedSpList.reduce((s, sp) => s + planBySp[sp].dischargeMw * 0.5, 0);
-  const projectedEndSoc = (() => {
-    for (let sp = 47; sp >= revealedPeriods; sp--) {
-      if (socAtExit[sp] != null) return socAtExit[sp] as number;
-    }
-    return battery.socPct;
-  })();
-
-  // Custom dot renderers for the planned-trade markers
-  type DotProps = { cx?: number; cy?: number; payload?: { chargeMw: number; dischargeMw: number; spIdx: number } };
-  const renderChargeDot = (props: DotProps) => {
-    const { cx, cy, payload } = props;
-    if (!payload || !payload.chargeMw || cx == null || cy == null) {
-      return <g key={`c-empty-${payload?.spIdx ?? Math.random()}`} />;
-    }
-    const r = Math.max(2, Math.min(5, 1.5 + payload.chargeMw / 14));
-    const isHl = payload.spIdx === hoveredSp || payload.spIdx === selectedSp;
-    return (
-      <g key={`c-${payload.spIdx}`}>
-        <circle cx={cx} cy={cy} r={r + 1.5} fill="#007be2" fillOpacity={0.2} />
-        <circle cx={cx} cy={cy} r={r} fill="#007be2" stroke={isHl ? '#fff' : 'transparent'} strokeWidth={isHl ? 1 : 0} />
-      </g>
-    );
-  };
-  const renderDischargeDot = (props: DotProps) => {
-    const { cx, cy, payload } = props;
-    if (!payload || !payload.dischargeMw || cx == null || cy == null) {
-      return <g key={`d-empty-${payload?.spIdx ?? Math.random()}`} />;
-    }
-    const r = Math.max(2, Math.min(5, 1.5 + payload.dischargeMw / 14));
-    const isHl = payload.spIdx === hoveredSp || payload.spIdx === selectedSp;
-    return (
-      <g key={`d-${payload.spIdx}`}>
-        <rect x={cx - r - 1.5} y={cy - r - 1.5} width={(r + 1.5) * 2} height={(r + 1.5) * 2} fill="#ff874b" fillOpacity={0.18} rx={1.5} />
-        <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} fill="#ff874b" stroke={isHl ? '#fff' : 'transparent'} strokeWidth={isHl ? 1 : 0} rx={1} />
-      </g>
-    );
-  };
+  const ladder: { price: number; mw: number; kind: 'ask' | 'bid' }[] = selBook
+    ? [
+      ...[...selBook.asks].reverse().map(l => ({ ...l, kind: 'ask' as const })),
+      ...selBook.bids.map(l => ({ ...l, kind: 'bid' as const })),
+    ]
+    : [];
+  const maxLvl = Math.max(1, ...ladder.map(l => l.mw));
 
   return (
-    <div className="panel intraday-panel" id="intraday-tab">
+    <div className="panel day-ahead-full" id="intraday-tab">
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
-          <h3><Clock size={16} /> Intraday Continuous Market <TermTooltip term="Gate Closure" label="ID" /></h3>
-          <HelpIcon text="Trade individual settlement periods as new information arrives. ID prices update with the latest market conditions. Plans you have placed are shown as dots on the chart." />
-          <span className="da-delivery-badge">
-            Delivery <strong>{formatDeliveryDay(todayDay)}</strong>
-          </span>
+          <h3><Clock size={16} /> Intraday · continuous order book</h3>
+          <HelpIcon text="Continuous trading per half-hour product, like EPEX/Nord Pool GB intraday. Every product has its own order book (bids = buyers, asks = sellers). Crossing the spread fills immediately but costs you the spread; resting limit orders may fill later at your price — or not at all. Each product closes 1 hour before delivery (BM Gate Closure, T-60). Tomorrow's products open once the DA auction has cleared." />
+          <div className="idb-day-toggle">
+            <button className={`hdr-tab ${day === today ? 'active' : ''}`} onClick={() => { setDayChoice('today'); setSelected(null); }}>
+              Today · {formatDeliveryDay(today)}
+            </button>
+            <button
+              className={`hdr-tab ${day !== today ? 'active' : ''}`}
+              disabled={!tomorrowOpen}
+              title={tomorrowOpen ? '' : 'Opens after the DA auction clears (09:20 UK)'}
+              onClick={() => { setDayChoice('tomorrow'); setSelected(null); }}
+            >
+              Tomorrow · {formatDeliveryDay(nextDay.day)}
+            </button>
+          </div>
         </div>
 
         <div className="kpi-strip">
           <div className="kpi-card">
             <div className="kpi-label">SoC now</div>
-            <div className="kpi-value-row">
-              <span className="kpi-value">{battery.socPct.toFixed(0)}<span className="kpi-unit">%</span></span>
-            </div>
-            <div className="kpi-sub">{battery.currentSocMwh.toFixed(0)} / {battery.config.capacityMwh} MWh</div>
+            <div className="kpi-value-row"><span className="kpi-value">{battery.socPct.toFixed(0)}<span className="kpi-unit">%</span></span></div>
+            <div className="kpi-sub">{battery.currentSocMwh.toFixed(0)} / {cap} MWh</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">Projected end-of-day</div>
-            <div className="kpi-value-row">
-              <span className="kpi-value" style={{ color: 'var(--chart-soc)' }}>{projectedEndSoc.toFixed(0)}<span className="kpi-unit">%</span></span>
-            </div>
-            <div className="kpi-sub">after all scheduled trades</div>
+            <div className="kpi-label">Working orders</div>
+            <div className="kpi-value-row"><span className="kpi-value">{working.length}</span></div>
+            <div className="kpi-sub">resting in the book</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">Headroom</div>
+            <div className="kpi-label">ID cash today</div>
             <div className="kpi-value-row">
-              <span className="kpi-value" style={{ fontSize: 16 }}>
-                <span style={{ color: 'var(--accent)' }}>↓{maxCharge.toFixed(0)}</span>
-                <span className="kpi-unit"> / </span>
-                <span style={{ color: 'var(--magenta)' }}>↑{maxDischarge.toFixed(0)}</span>
-                <span className="kpi-unit"> MW</span>
-              </span>
+              <span className={`kpi-value ${idCashToday >= 0 ? 'positive' : 'negative'}`}>{idCashToday >= 0 ? '+' : '−'}£{Math.abs(idCashToday).toFixed(0)}</span>
             </div>
-            <div className="kpi-sub">max charge / discharge now</div>
+            <div className="kpi-sub">from fills for today's delivery</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">Scheduled today</div>
-            <div className="kpi-value-row">
-              <span className="kpi-value">{plannedSpList.length}<span className="kpi-unit"> SPs</span></span>
-            </div>
-            <div className="kpi-sub">
-              <span style={{ color: 'var(--accent)' }}>{todayChargeMwh.toFixed(0)}</span> chg ·{' '}
-              <span style={{ color: 'var(--magenta)' }}>{todayDischargeMwh.toFixed(0)}</span> dis MWh
-            </div>
+            <div className="kpi-label">Open products</div>
+            <div className="kpi-value-row"><span className="kpi-value">{rows.filter(r => r.open).length}</span></div>
+            <div className="kpi-sub">gate closes T-60 each</div>
           </div>
         </div>
 
         <div className="da-sticky-content">
-          {/* Chart — 2/3 width */}
           <div className="da-forecast-chart compact">
             <div className="da-forecast-head">
               <h4>
-                DA Forecast · Intraday · Plan
-                <HelpIcon text="Slate bars = DA forecast (locked). Blue dashed = live ID price. Orange = settled SIP. Cyan dot = planned charge, magenta square = planned discharge — size scales with MW. Purple line = projected SoC." />
+                DA · ID mid · SIP · your net position
+                <HelpIcon text="Grey bars = DA price of each half-hour. Blue line = current intraday mid of open products. Red = settled SIP (only after each SP ends). Lavender = projected SoC from your net DA+ID position." />
               </h4>
-              <div className="da-chart-legend inline">
-                <span className="legend-item"><span className="legend-bar da-bar" /> DA</span>
-                <span className="legend-item"><span className="legend-line id-line" /> ID</span>
-                {revealedPeriods > 0 && (
-                  <span className="legend-item"><span className="legend-line sip-line" /> SIP</span>
-                )}
-                <span className="legend-item"><span className="legend-dot charge-dot" /> Charge</span>
-                <span className="legend-item"><span className="legend-dot discharge-dot" /> Discharge</span>
-                <span className="legend-item"><span className="legend-line soc-line" /> SoC%</span>
-              </div>
             </div>
-            <ResponsiveContainer width="100%" height={200}>
-              <ComposedChart
-                data={chartData}
-                margin={{ top: 6, right: 8, bottom: 0, left: -8 }}
-                barCategoryGap="28%"
-                onMouseMove={(e: unknown) => {
-                  const ev = e as { activePayload?: Array<{ payload?: { spIdx?: number } }> };
-                  const idx = ev?.activePayload?.[0]?.payload?.spIdx;
-                  if (typeof idx === 'number') setHoveredSp(idx);
-                }}
-                onMouseLeave={() => setHoveredSp(null)}
-              >
-                <CartesianGrid
-                  strokeDasharray="5 5"
-                  stroke="#8b95a8"
-                  strokeOpacity={1}
-                  strokeWidth={1.2}
-                  verticalCoordinatesGenerator={(props: { offset?: { left?: number; width?: number } }) => {
-                    const o = props.offset ?? {};
-                    const w = o.width ?? 0;
-                    const left = o.left ?? 0;
-                    const n = chartData.length;
-                    if (n < 2) return [];
-                    const stride = 2; // every 1h on a 48-SP day
-                    const out: number[] = [];
-                    for (let i = 0; i < n; i += stride) {
-                      out.push(left + (i / (n - 1)) * w);
-                    }
-                    return out;
-                  }}
-                />
+            <ResponsiveContainer width="100%" height={190}>
+              <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }} barCategoryGap="25%"
+                onClick={(e: unknown) => {
+                  const idx = (e as { activeTooltipIndex?: number })?.activeTooltipIndex;
+                  if (typeof idx === 'number' && rows[idx]?.open) choose(idx);
+                }}>
+                <CartesianGrid strokeDasharray="5 5" stroke="#8b95a8" strokeOpacity={0.5} vertical={false} />
                 <XAxis dataKey="sp" stroke="#6b7280" fontSize={9} interval={7} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="price" stroke="#6b7280" fontSize={10} width={36} tickLine={false} axisLine={false} />
-                <YAxis
-                  yAxisId="soc"
-                  orientation="right"
-                  stroke="#c7b4f8"
-                  fontSize={10}
-                  width={32}
-                  domain={[0, 100]}
-                  ticks={[0, 50, 100]}
-                  tickFormatter={(v: number) => `${v}%`}
-                  tickLine={false}
-                  axisLine={false}
-                />
+                <YAxis yAxisId="p" stroke="#6b7280" fontSize={10} width={40} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="soc" orientation="right" stroke="#c7b4f8" fontSize={10} width={32} domain={[0, 100]} ticks={[0, 50, 100]} tickFormatter={(v: number) => `${v}%`} tickLine={false} axisLine={false} />
                 <Tooltip
-                  cursor={{ stroke: '#9272f5', strokeWidth: 1, strokeDasharray: '2 3' }}
                   contentStyle={{ background: '#0f1420', border: '1px solid #1f2535', borderRadius: '6px', color: '#e5e7eb', fontSize: 11, padding: '6px 8px' }}
-                  labelStyle={{ color: '#6b7280', fontSize: 10, marginBottom: 2 }}
-                  itemStyle={{ color: '#e5e7eb', padding: 0 }}
-                  formatter={(value: unknown, name: unknown) => {
-                    if (value == null) return ['—', String(name)];
-                    const key = String(name);
-                    if (key === 'Projected SoC') {
-                      return [`${Number(value).toFixed(1)}%`, key];
-                    }
-                    if (key === 'Planned Charge' || key === 'Planned Discharge') {
-                      return [`£${Number(value).toFixed(2)}/MWh`, key];
-                    }
-                    return [`£${Number(value).toFixed(2)}`, key];
-                  }}
+                  formatter={(v: unknown, n: unknown) => (v == null ? ['—', String(n)] : String(n) === 'SoC' ? [`${Number(v).toFixed(0)}%`, 'SoC'] : [`£${Number(v).toFixed(2)}`, String(n)])}
                 />
-                <ReferenceLine
-                  yAxisId="price"
-                  x={chartData[revealedPeriods]?.sp}
-                  stroke="#6b7280"
-                  strokeDasharray="2 4"
-                  label={{ value: 'Now', fill: '#9ca3af', fontSize: 10, position: 'top' }}
-                />
-                <Bar yAxisId="price" dataKey="da" name="DA Forecast" radius={[2, 2, 0, 0]} fill="#9ca3af">
-                  {chartData.map((entry, i) => (
-                    <Cell
-                      key={i}
-                      fill={entry.isFuture ? '#9ca3af' : '#3a4458'}
-                      fillOpacity={entry.isHovered || entry.isSelected ? 0.9 : entry.isFuture ? 0.5 : 0.3}
-                    />
+                <Bar yAxisId="p" dataKey="da" name="DA" radius={[2, 2, 0, 0]}>
+                  {chartData.map((c, i) => (
+                    <Cell key={i} fill={c.net < 0 ? '#007be2' : c.net > 0 ? '#ff874b' : '#9ca3af'} fillOpacity={selected === i ? 1 : c.net !== 0 ? 0.75 : 0.35} />
                   ))}
                 </Bar>
-                <Line
-                  yAxisId="price"
-                  type="monotone"
-                  dataKey="id"
-                  stroke="#76b8ef"
-                  strokeWidth={2.5}
-                  strokeDasharray="4 2"
-                  dot={false}
-                  name="ID Price"
-                  connectNulls={false}
-                  isAnimationActive={false}
-                />
-                {revealedPeriods > 0 && (
-                  <Line
-                    yAxisId="price"
-                    type="monotone"
-                    dataKey="sip"
-                    stroke="#ff5f62"
-                    strokeWidth={2.5}
-                    dot={false}
-                    name="SIP Outturn"
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                )}
-                <Line
-                  yAxisId="soc"
-                  type="stepAfter"
-                  dataKey="socPct"
-                  stroke="#c7b4f8"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Projected SoC"
-                  connectNulls={false}
-                  isAnimationActive={false}
-                />
-                <Scatter
-                  yAxisId="price"
-                  dataKey="chargeMarker"
-                  shape={renderChargeDot}
-                  isAnimationActive={false}
-                  name="Planned Charge"
-                />
-                <Scatter
-                  yAxisId="price"
-                  dataKey="dischargeMarker"
-                  shape={renderDischargeDot}
-                  isAnimationActive={false}
-                  name="Planned Discharge"
-                />
+                <Line yAxisId="p" dataKey="mid" name="ID mid" stroke="#76b8ef" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
+                <Line yAxisId="p" dataKey="sip" name="SIP" stroke="#ff5f62" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Line yAxisId="soc" dataKey="soc" name="SoC" type="stepAfter" stroke="#c7b4f8" strokeWidth={2} dot={false} isAnimationActive={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Trade panel — 1/3 width */}
-          <div className="da-quick-panel id-trade-panel">
-            {selectedSp !== null ? (
-              <div className="id-trade-card">
-                <div className="id-trade-head">
-                  <span className="id-trade-sp">{chartData[selectedSp]?.sp}</span>
-                  <span className="id-trade-price">£{selectedId.toFixed(2)}/MWh</span>
+          <div className="da-quick-panel idb-ticket">
+            {sel ? (
+              <>
+                <div className="idb-ticket-head">
+                  <strong>{spLabel(sel.sp)}</strong>
+                  <span className="muted"> · {formatDeliveryDay(day)}</span>
+                  <span className="idb-gate">{sel.open ? `gate in ${Math.max(0, Math.floor(gateMs / 60000))} min` : 'closed'}</span>
                 </div>
-                <div className="id-trade-spread">
-                  DA £{selectedDa.toFixed(2)} · spread
-                  <span className={spread >= 0 ? 'positive' : 'negative'}>
-                    {spread >= 0 ? ' +' : ' '}£{spread.toFixed(2)}
-                  </span>
+                <div className="idb-ladder">
+                  {ladder.map((l, i) => (
+                    <div key={i} className={`idb-level ${l.kind}`} onClick={() => setLimit(l.price.toFixed(2))} title="Click to use as limit">
+                      <span className="idb-depth" style={{ width: `${(l.mw / maxLvl) * 100}%` }} />
+                      <span className="idb-px">£{l.price.toFixed(2)}</span>
+                      <span className="idb-mw">{l.mw.toFixed(1)} MW</span>
+                    </div>
+                  ))}
+                  {selBook && <div className="idb-spread">spread £{(2 * selBook.halfSpread).toFixed(2)} · mid £{selBook.mid.toFixed(2)} · DA £{fmt(sel.da)}</div>}
                 </div>
-                {selectedPlan && (
-                  <div className="id-trade-existing">
-                    Existing plan: {selectedPlan.chargeMw > 0 && <span className="hint-charge">+{selectedPlan.chargeMw.toFixed(0)} MW charge</span>}
-                    {selectedPlan.chargeMw > 0 && selectedPlan.dischargeMw > 0 && ' · '}
-                    {selectedPlan.dischargeMw > 0 && <span className="hint-discharge">{selectedPlan.dischargeMw.toFixed(0)} MW discharge</span>}
-                  </div>
-                )}
-                {socEntryAtSelected !== null && socExitAtSelected !== null && (
-                  <div className="id-trade-soc">
-                    SoC at this SP:
-                    <strong>{socEntryAtSelected.toFixed(0)}%</strong>
-                    <span className="id-soc-arrow">→</span>
-                    <strong className={socExitAtSelected < 15 ? 'negative' : socExitAtSelected > 90 ? 'warn' : ''}>
-                      {socExitAtSelected.toFixed(0)}%
-                    </strong>
-                  </div>
-                )}
-
-                <div className="id-mw-row">
-                  <label>Volume</label>
-                  <input
-                    type="number"
-                    className="input input-sm"
-                    value={mw}
-                    onChange={e => setMw(e.target.value)}
-                    min={1}
-                    max={battery.config.powerRatingMw}
-                  />
-                  <span className="id-mw-unit">MW</span>
+                <div className="idb-side">
+                  <button className={`btn idb-side-btn buy ${side === OrderSide.BUY ? 'active' : ''}`} onClick={() => setSide(OrderSide.BUY)}>Buy · charge</button>
+                  <button className={`btn idb-side-btn sell ${side === OrderSide.SELL ? 'active' : ''}`} onClick={() => setSide(OrderSide.SELL)}>Sell · discharge</button>
                 </div>
-
-                <div className="id-action-buttons">
-                  <button
-                    className="btn btn-action btn-charge"
-                    onClick={handleCharge}
-                    disabled={maxCharge < 0.1 || vol <= 0}
-                    title={maxCharge < 0.1 ? 'Battery full' : `Up to ${maxCharge.toFixed(1)} MW`}
-                  >
-                    <ArrowDown size={14} /> Charge {Math.min(vol, maxCharge).toFixed(0)} MW
-                  </button>
-                  <button
-                    className="btn btn-action btn-discharge"
-                    onClick={handleDischarge}
-                    disabled={maxDischarge < 0.1 || vol <= 0}
-                    title={maxDischarge < 0.1 ? 'Battery empty' : `Up to ${maxDischarge.toFixed(1)} MW`}
-                  >
-                    <ArrowUp size={14} /> Discharge {Math.min(vol, maxDischarge).toFixed(0)} MW
-                  </button>
+                <div className="idb-fields">
+                  <label>Type
+                    <select className="input" value={type} onChange={e => setType(e.target.value as IdOrderType)}>
+                      <option value="limit">Limit</option>
+                      <option value="market">Market</option>
+                      <option value="ioc">IOC</option>
+                      <option value="fok">FOK</option>
+                    </select>
+                  </label>
+                  <label>MW
+                    <input className="input" type="number" min={0.1} step={1} value={qty} onChange={e => setQty(e.target.value)} />
+                  </label>
+                  <label>Limit £
+                    <input className="input" type="number" step={0.05} value={type === 'market' ? '' : limit} disabled={type === 'market'} onChange={e => setLimit(e.target.value)} placeholder={type === 'market' ? 'n/a' : ''} />
+                  </label>
                 </div>
-              </div>
+                <div className="idb-hint">{TYPE_HELP[type]}</div>
+                <div className="idb-hint">
+                  Now crossable: {est.mw.toFixed(1)} MW{est.mw > 0 ? ` @ avg £${est.price.toFixed(2)}` : ''} · room {room.toFixed(1)} MW (net {sel.net >= 0 ? '+' : ''}{sel.net.toFixed(0)} MW, limit ±{P})
+                </div>
+                <button className={`btn btn-submit idb-submit ${side === OrderSide.BUY ? 'buy' : 'sell'}`} disabled={!sel.open || !(qtyNum > 0) || (type !== 'market' && !Number.isFinite(limitNum))} onClick={place}>
+                  {side === OrderSide.BUY ? 'Buy' : 'Sell'} {qtyNum > 0 ? qtyNum : ''} MW · {type.toUpperCase()}
+                </button>
+              </>
             ) : (
               <div className="id-trade-card empty">
-                <div className="id-trade-empty-title">No period selected</div>
-                <div className="id-trade-empty-sub">
-                  Click a future settlement period below or a bar on the chart to place an intraday trade.
-                </div>
+                <div className="id-trade-empty-title">Select a product</div>
+                <div className="id-trade-empty-sub">Click an open half-hour in the table or chart to see its order book and place orders.</div>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* SP selector grid */}
-      <div className="id-trade-section">
-        <h4>
-          Tradable settlement periods (next 12)
-          <HelpIcon text="Intraday gate closure is 1 hour before each SP starts (BM Gate Closure): after that your physical position is frozen, so the next ~2 periods are no longer tradable." />
-        </h4>
-        <div className="id-sp-grid">
-          {Array.from({ length: Math.max(0, Math.min(12, 48 - firstTradableSp)) }, (_, idx) => {
-            const sp = firstTradableSp + idx;
-            const hour = Math.floor(sp / 2);
-            const min = sp % 2 === 0 ? '00' : '30';
-            const idPrice = idPrices[sp] ?? currentPrice;
-            const isLow = idPrice < 35;
-            const isHigh = idPrice > 65;
-            const plan = planBySp[sp];
-            return (
-              <button
-                key={sp}
-                className={`id-sp-btn ${selectedSp === sp ? 'selected' : ''} ${isLow ? 'low' : ''} ${isHigh ? 'high' : ''}`}
-                onClick={() => setSelectedSp(sp === selectedSp ? null : sp)}
-                onMouseEnter={() => setHoveredSp(sp)}
-                onMouseLeave={() => setHoveredSp(null)}
-              >
-                <span className="id-sp-time">{String(hour).padStart(2, '0')}:{min}</span>
-                <span className="id-sp-price">£{idPrice.toFixed(1)}</span>
-                {plan && (
-                  <span className="id-sp-plan">
-                    {plan.chargeMw > 0 && <span className="plan-chip charge">+{plan.chargeMw.toFixed(0)}</span>}
-                    {plan.dischargeMw > 0 && <span className="plan-chip discharge">-{plan.dischargeMw.toFixed(0)}</span>}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Planned positions for today */}
-      <div className="id-plan-section">
-        <h4>
-          Today&apos;s schedule
-          <HelpIcon text="All your committed positions for today across DA, ID and BM. Past SPs have already delivered." />
-        </h4>
-        {plannedSpList.length === 0 ? (
-          <div className="empty-state" style={{ padding: 12 }}>
-            No positions scheduled for {formatDeliveryDay(todayDay)} yet. Place an intraday trade above or submit DA bids.
-          </div>
-        ) : (
-          <div className="id-plan-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>SP</th>
-                  <th>Charge MW</th>
-                  <th>Discharge MW</th>
-                  <th>Avg Price</th>
-                  <th>Markets</th>
-                  <th>Status</th>
+      <div className="idb-lower">
+        <div className="idb-products">
+          <table className="data-table">
+            <thead>
+              <tr><th>SP</th><th>DA £</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Net MW</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.sp}
+                  className={`${selected === r.sp ? 'row-hovered' : ''} ${r.open ? '' : 'muted'}`}
+                  style={{ cursor: r.open ? 'pointer' : 'default' }}
+                  onClick={() => r.open && choose(r.sp)}>
+                  <td>{spLabel(r.sp)}</td>
+                  <td>{fmt(r.da)}</td>
+                  <td>{r.book ? <span>{fmt(r.book.bids[0]?.price)} <small className="muted">{fmt(r.book.bids[0]?.mw, 0)}</small></span> : '—'}</td>
+                  <td>{r.book ? <span>{fmt(r.book.asks[0]?.price)} <small className="muted">{fmt(r.book.asks[0]?.mw, 0)}</small></span> : '—'}</td>
+                  <td>{r.book ? fmt(r.book.mid) : '—'}</td>
+                  <td style={{ color: r.net < 0 ? 'var(--charge)' : r.net > 0 ? 'var(--discharge)' : undefined }}>{r.net === 0 ? '·' : `${r.net > 0 ? '+' : ''}${r.net.toFixed(0)}`}</td>
+                  <td className="muted">{r.status}</td>
                 </tr>
-              </thead>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="idb-orders">
+          <h4>Working orders</h4>
+          {working.length === 0 ? <div className="muted idb-empty">None.</div> : (
+            <table className="data-table">
+              <thead><tr><th>ID</th><th>Product</th><th>Side</th><th>Limit</th><th>Filled</th><th /></tr></thead>
               <tbody>
-                {plannedSpList.map((sp) => {
-                  const plan = planBySp[sp];
-                  const hour = Math.floor(sp / 2);
-                  const min = sp % 2 === 0 ? '00' : '30';
-                  const markets = Array.from(new Set(plan.positions.map((p) => p.market.toUpperCase()))).join(' · ');
-                  const allDelivered = plan.positions.every((p) => p.delivered);
-                  return (
-                    <tr
-                      key={sp}
-                      className={sp === hoveredSp || sp === selectedSp ? 'row-hovered' : ''}
-                      onMouseEnter={() => setHoveredSp(sp)}
-                      onMouseLeave={() => setHoveredSp(null)}
-                      onClick={() => sp >= firstTradableSp && setSelectedSp(sp === selectedSp ? null : sp)}
-                      style={{ cursor: sp >= firstTradableSp ? 'pointer' : 'default' }}
-                    >
-                      <td>{String(hour).padStart(2, '0')}:{min}</td>
-                      <td className={plan.chargeMw > 0 ? 'buy-text' : 'muted'}>
-                        {plan.chargeMw > 0 ? plan.chargeMw.toFixed(1) : '—'}
-                      </td>
-                      <td className={plan.dischargeMw > 0 ? 'sell-text' : 'muted'}>
-                        {plan.dischargeMw > 0 ? plan.dischargeMw.toFixed(1) : '—'}
-                      </td>
-                      <td>£{plan.avgPrice.toFixed(2)}</td>
-                      <td className="muted">{markets}</td>
-                      <td className={allDelivered ? 'muted' : 'positive'}>
-                        {allDelivered ? 'Delivered' : sp < revealedPeriods ? 'Settling' : 'Pending'}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {working.map(o => (
+                  <tr key={o.id}>
+                    <td>{o.id}</td>
+                    <td>{o.deliveryDay === today ? '' : 'D+1 '}{spLabel(o.period)}</td>
+                    <td style={{ color: o.side === OrderSide.BUY ? 'var(--charge)' : 'var(--discharge)' }}>{o.side === OrderSide.BUY ? 'Buy' : 'Sell'}</td>
+                    <td>£{fmt(o.limitPrice)}</td>
+                    <td>{o.filledMw.toFixed(1)} / {o.qtyMw.toFixed(1)}</td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => onCancelOrder(o.id)} title="Cancel"><X size={12} /></button></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
-          </div>
-        )}
+          )}
+
+          <h4>Fills</h4>
+          {fills.length === 0 ? <div className="muted idb-empty">No fills yet.</div> : (
+            <table className="data-table">
+              <thead><tr><th>Product</th><th>Side</th><th>MW</th><th>Price</th><th>Type</th></tr></thead>
+              <tbody>
+                {fills.map((f, i) => (
+                  <tr key={i}>
+                    <td>{f.deliveryDay === today ? '' : 'D+1 '}{spLabel(f.period)}</td>
+                    <td style={{ color: f.side === OrderSide.BUY ? 'var(--charge)' : 'var(--discharge)' }}>{f.side === OrderSide.BUY ? 'Buy' : 'Sell'}</td>
+                    <td>{f.mw.toFixed(1)}</td>
+                    <td>£{f.price.toFixed(2)}</td>
+                    <td className="muted">{f.aggressor ? 'took liquidity' : 'resting filled'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <h4>Order history</h4>
+          {history.length === 0 ? <div className="muted idb-empty">—</div> : (
+            <ul className="idb-history">
+              {history.map(o => (
+                <li key={o.id}>
+                  <span className={`idb-status ${o.status}`}>{o.status}</span> {o.id} · {o.side === OrderSide.BUY ? 'Buy' : 'Sell'} {o.qtyMw} MW {spLabel(o.period)} {o.type.toUpperCase()}
+                  {o.filledMw > 0 && ` · filled ${o.filledMw} @ £${o.avgFillPrice.toFixed(2)}`}
+                  {o.note && <span className="muted"> — {o.note}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );
 }
+

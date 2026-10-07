@@ -7352,3 +7352,49 @@ body {
   color: var(--text-muted);
   line-height: 1.4;
 }
+
+/* ===== Intraday continuous order book (idb-*) ===== */
+.idb-day-toggle { display: inline-flex; gap: 14px; margin-left: auto; }
+.idb-day-toggle .hdr-tab:disabled { opacity: 0.4; cursor: not-allowed; }
+.idb-ticket { gap: 8px; }
+.idb-ticket-head { display: flex; align-items: baseline; gap: 4px; font-size: 14px; }
+.idb-gate { margin-left: auto; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.idb-ladder { display: flex; flex-direction: column; gap: 1px; font-family: var(--font-mono); font-size: 11px; }
+.idb-level {
+  position: relative; display: flex; justify-content: space-between;
+  padding: 2px 6px; cursor: pointer; border-radius: 2px;
+}
+.idb-level:hover { background: color-mix(in srgb, var(--text-muted) 12%, transparent); }
+.idb-depth { position: absolute; top: 0; bottom: 0; right: 0; opacity: 0.18; border-radius: 2px; pointer-events: none; }
+.idb-level.ask .idb-depth { background: var(--discharge); }
+.idb-level.bid .idb-depth { background: var(--charge); }
+.idb-level.ask .idb-px { color: var(--discharge); }
+.idb-level.bid .idb-px { color: var(--charge); }
+.idb-px, .idb-mw { position: relative; }
+.idb-mw { color: var(--text-muted); }
+.idb-spread { text-align: center; color: var(--text-muted); font-size: 10px; padding: 3px 0; border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); margin: 2px 0; order: 0; }
+.idb-side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.idb-side .btn { font-size: 12px; padding: 6px; opacity: 0.6; }
+.idb-side .btn.active { opacity: 1; }
+.idb-fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.idb-fields label { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.idb-fields .input { font-size: 12px; padding: 4px 6px; }
+.idb-hint { font-size: 11px; color: var(--text-muted); line-height: 1.35; }
+.idb-lower { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 12px 16px 16px; }
+.idb-products { max-height: 520px; overflow: auto; }
+.idb-products .data-table td, .idb-orders .data-table td { font-size: 12px; }
+.idb-orders h4 { margin: 4px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.idb-orders h4:not(:first-child) { margin-top: 16px; }
+.idb-empty { font-size: 12px; }
+.idb-history { list-style: none; margin: 0; padding: 0; font-size: 11px; display: flex; flex-direction: column; gap: 4px; }
+.idb-status { font-family: var(--font-mono); text-transform: uppercase; font-size: 10px; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); }
+.idb-status.filled { color: var(--green); border-color: currentColor; }
+.idb-status.rejected, .idb-status.expired { color: var(--red); border-color: currentColor; }
+@media (max-width: 900px) {
+  .idb-lower { grid-template-columns: 1fr; }
+}
+.idb-side-btn.buy.active { border-color: var(--charge); color: var(--charge); }
+.idb-side-btn.sell.active { border-color: var(--discharge); color: var(--discharge); }
+.idb-submit.buy { background: var(--charge); border-color: var(--charge); color: #fff; }
+.idb-submit.sell { background: var(--discharge); border-color: var(--discharge); color: #fff; }
+.idb-submit:disabled { opacity: 0.45; }

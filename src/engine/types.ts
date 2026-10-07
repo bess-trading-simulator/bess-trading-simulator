@@ -94,18 +94,117 @@ export interface Trade {
   marketType: MarketType;
 }
 
+/**
+ * A day-ahead order for one HOURLY product (hour 0-23 = SP 2h and 2h+1).
+ * BUY = charge: filled if clearing price ≤ limit. SELL = discharge: filled if
+ * clearing price ≥ limit. A buy and a sell on the same hour form a 2-step curve.
+ */
 export interface DayAheadBid {
-  period: number; // 0-indexed settlement period
+  hour: number;
   side: OrderSide;
   volumeMw: number;
-  price: number;
+  price: number; // limit £/MWh
 }
 
+/** Result of one hourly product after the auction cleared (pay-as-cleared). */
 export interface AuctionResult {
-  period: number; // 0-indexed settlement period
+  hour: number;
   clearingPrice: number;
-  playerVolume: number;
-  accepted: boolean;
+  forecastPrice: number;
+  /** Net filled MW: + = sell/discharge, − = buy/charge */
+  filledMw: number;
+  buyMw: number;
+  buyFilled: boolean;
+  sellMw: number;
+  sellFilled: boolean;
+}
+
+/** All market data for one delivery day (48 SPs, UK settlement day). */
+export interface MarketDay {
+  /** UTC midnight ms of the delivery day */
+  day: number;
+  source: 'real' | 'synthetic';
+  /** ISO date (YYYY-MM-DD) for real days */
+  date?: string;
+  /** Desk forecast of the DA price, visible before the auction (has realistic error) */
+  daForecast: number[];
+  /** Actual DA price per SP (real: Market Index Price). Hidden until the auction clears. */
+  daClearing: number[];
+  sipOutturn: number[];
+  niv: number[];
+  demandForecast: number[];
+  windForecast: number[];
+  solarForecast: number[];
+  demandOutturn: number[];
+  windOutturn: number[];
+  solarOutturn: number[];
+}
+
+// ===== Intraday continuous market =====
+
+export type IdOrderType = 'market' | 'limit' | 'ioc' | 'fok';
+
+export interface IdOrder {
+  id: string;
+  deliveryDay: number;
+  period: number;
+  side: OrderSide; // BUY = charge, SELL = discharge
+  type: IdOrderType;
+  limitPrice: number | null;
+  qtyMw: number;
+  filledMw: number;
+  avgFillPrice: number;
+  status: 'working' | 'filled' | 'partial' | 'cancelled' | 'expired' | 'rejected';
+  createdAt: number;
+  updatedAt: number;
+  note?: string;
+}
+
+export interface IdFill {
+  orderId: string;
+  deliveryDay: number;
+  period: number;
+  side: OrderSide;
+  mw: number;
+  price: number;
+  time: number;
+  aggressor: boolean; // true = you crossed the spread, false = your resting order was hit
+}
+
+export interface IntradayState {
+  /** Mid price per product, key `${deliveryDay}:${period}` */
+  mids: Record<string, number>;
+  /** AR(1) deviation of the mid from its fundamental anchor, per product */
+  devs: Record<string, number>;
+  /** Mid history per product (last N ticks) for sparklines */
+  midHistory: Record<string, number[]>;
+  orders: IdOrder[];
+  fills: IdFill[];
+  /** Book volume taken by the player in the current tick, so the same depth can't be hit twice */
+  taken: Record<string, { time: number; bid: number; ask: number }>;
+  seq: number;
+}
+
+// ===== Settlement ledger (per delivery day + SP) =====
+
+export interface SettlementEntry {
+  deliveryDay: number;
+  period: number;
+  /** Net contracted MW (DA + ID): + = sell/discharge, − = buy/charge */
+  contractedMw: number;
+  /** MW actually delivered for the contract part (after SoC/power limits) */
+  deliveredMw: number;
+  /** Deliberate deviation from contract set in the Imbalance view (MW, + = extra discharge) */
+  deviationMw: number;
+  /** Metered MW = deliveredMw + deviationMw */
+  meteredMw: number;
+  /** Cash from DA + ID contracts (+ = received) */
+  contractCash: number;
+  /** (metered − contracted) × 0.5 h, + = long (spilled), settled at SIP */
+  imbalanceMwh: number;
+  imbalancePrice: number | null;
+  imbalanceCash: number;
+  settled: boolean;
 }
 
 export interface MarketEvent {
@@ -128,11 +227,14 @@ export interface DayAheadState {
   results: AuctionResult[];
   gateClosureTime: number | null;
   isAuctionOpen: boolean;
-  /** UTC midnight ms of the day this auction's bids will deliver on */
+  /** UTC midnight ms of the day this auction's bids will deliver on (= nextDay.day) */
   deliveryDay: number;
+  /** Source of TODAY's market data */
+  todaySource?: 'real' | 'synthetic';
   nextDeliveryDay: number;
-  forecastPrices: number[]; // 48 half-hourly DA prices
-  sipOutturn: number[]; // 48 half-hourly SIP outturns (revealed as time passes)
+  /** TODAY's DA prices (cleared in yesterday's auction; real days: Market Index Price) */
+  forecastPrices: number[];
+  sipOutturn: number[]; // 48 half-hourly SIP outturns of TODAY (revealed as time passes)
   niv: number[]; // 48 NIV values
   demandForecast: number[]; // 48 half-hourly demand forecast MW
   windForecast: number[]; // 48 half-hourly wind forecast MW
@@ -182,6 +284,11 @@ export interface GameState {
   bm: BmState;
   analysis: AnalysisSummary | null;
   triadAlert: boolean;
+  /** Market data of the NEXT delivery day — the day the open DA auction is for. */
+  nextDay: MarketDay;
+  intraday: IntradayState;
+  /** Settlement ledger, one entry per (deliveryDay, period) that saw activity. */
+  ledger: SettlementEntry[];
 }
 
 export const GLOSSARY: Record<string, string> = {
