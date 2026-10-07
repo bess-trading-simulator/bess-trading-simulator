@@ -1,4 +1,6 @@
 import type { GameState } from './types';
+import { getUtcDayStart } from './clock';
+import { findEntry } from './settlement';
 
 export interface SettlementRow {
   period: number;
@@ -34,36 +36,31 @@ function periodLabel(period: number): string {
 }
 
 export function buildPositionBook(state: GameState): PositionBookSummary {
+  // Today's delivery day only; physical/imbalance come from the settlement ledger.
+  const day = getUtcDayStart(state.clock.currentTime);
   const rows: SettlementRow[] = Array.from({ length: 48 }, (_, period) => {
-    const positions = state.dayAhead.playerSchedule.filter(position => position.period === period);
-    const daPositions = positions.filter(position => position.market === 'da');
-    const idPositions = positions.filter(position => position.market === 'id');
-    const deliveredPositions = positions.filter(position => position.delivered);
+    const positions = state.dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === period);
+    const entry = findEntry(state.ledger, day, period);
+    const signedMwh = (action: 'charge' | 'discharge', mw: number) => (action === 'discharge' ? mw * SP_HOURS : -mw * SP_HOURS);
+    const cashflow = (action: 'charge' | 'discharge', mw: number, price: number) => signedMwh(action, mw) * price;
 
-    const signedMwh = (action: 'charge' | 'discharge', mw: number) => (
-      action === 'discharge' ? mw * SP_HOURS : -mw * SP_HOURS
-    );
-    const cashflow = (action: 'charge' | 'discharge', mw: number, price: number) => (
-      action === 'discharge' ? mw * SP_HOURS * price : -mw * SP_HOURS * price
-    );
-
-    const daMwh = daPositions.reduce((sum, position) => sum + signedMwh(position.action, position.mw), 0);
-    const idMwh = idPositions.reduce((sum, position) => sum + signedMwh(position.action, position.mw), 0);
+    const daPositions = positions.filter(p => p.market === 'da');
+    const idPositions = positions.filter(p => p.market !== 'da');
+    const daMwh = daPositions.reduce((sum, p) => sum + signedMwh(p.action, p.mw), 0);
+    const idMwh = idPositions.reduce((sum, p) => sum + signedMwh(p.action, p.mw), 0);
     const contractedMwh = daMwh + idMwh;
-    const physicalMwh = deliveredPositions.reduce((sum, position) => sum + signedMwh(position.action, position.mw), 0);
-    const imbalanceMwh = physicalMwh - contractedMwh;
-    const daCashflow = daPositions.reduce((sum, position) => sum + cashflow(position.action, position.mw, position.price), 0);
-    const idCashflow = idPositions.reduce((sum, position) => sum + cashflow(position.action, position.mw, position.price), 0);
-    const sipPrice = period < state.dayAhead.revealedPeriods ? state.dayAhead.sipOutturn[period] : null;
-    const imbalanceCashflow = sipPrice === null ? 0 : imbalanceMwh * sipPrice;
+    const physicalMwh = (entry?.meteredMw ?? 0) * SP_HOURS;
+    const daCashflow = daPositions.reduce((sum, p) => sum + cashflow(p.action, p.mw, p.price), 0);
+    const idCashflow = idPositions.reduce((sum, p) => sum + cashflow(p.action, p.mw, p.price), 0);
+    const sipPrice = entry?.settled ? entry.imbalancePrice : null;
+    const imbalanceMwh = entry?.settled ? entry.imbalanceMwh : physicalMwh - (entry ? contractedMwh : 0);
+    const imbalanceCashflow = entry?.settled ? entry.imbalanceCash : 0;
     const totalCashflow = daCashflow + idCashflow + imbalanceCashflow;
-    const hasSchedule = positions.length > 0;
-    const hasDelivery = deliveredPositions.length > 0;
-    const status: SettlementRow['status'] = sipPrice !== null
+    const status: SettlementRow['status'] = entry?.settled
       ? 'settled'
-      : hasDelivery
+      : entry
         ? 'delivered'
-        : hasSchedule
+        : positions.length > 0
           ? 'scheduled'
           : 'open';
 

@@ -167,3 +167,63 @@ export function getRevenueSummary(state: BatteryState) {
     totalCycles: Math.round(cycles * 100) / 100,
   };
 }
+
+/**
+ * Physical dispatch only (no cash): signed MW for one SP, + = discharge,
+ * − = charge, clipped to power and SoC limits. Cash is booked separately via
+ * the settlement ledger (contracts at their price, imbalance at SIP).
+ * `logPrice` is only used for the cycle log display.
+ */
+export function dispatchBattery(
+  state: BatteryState,
+  signedMw: number,
+  timestamp: number,
+  logPrice: number,
+  durationHours = 0.5,
+): { newState: BatteryState; actualMw: number } {
+  if (Math.abs(signedMw) < 0.01) return { newState: state, actualMw: 0 };
+  const eff = state.config.efficiencyPct / 100;
+  if (signedMw > 0) {
+    const mw = Math.min(signedMw, getMaxDischargeableMw(state));
+    if (mw < 0.01) return { newState: state, actualMw: 0 };
+    const mwh = mw * durationHours;
+    const soc = Math.max(0, state.currentSocMwh - mwh);
+    const entry: CycleEntry = { timestamp, action: 'discharge', mw, price: logPrice, energyMwh: mwh, cost: mwh * logPrice };
+    return {
+      actualMw: mw,
+      newState: {
+        ...state,
+        currentSocMwh: soc,
+        socPct: Math.round((soc / state.config.capacityMwh) * 10000) / 100,
+        totalDischargedMwh: state.totalDischargedMwh + mwh,
+        cycleLog: [entry, ...state.cycleLog].slice(0, 100),
+      },
+    };
+  }
+  const mw = Math.min(-signedMw, getMaxChargeableMw(state));
+  if (mw < 0.01) return { newState: state, actualMw: 0 };
+  const gridMwh = mw * durationHours;
+  const stored = gridMwh * eff;
+  const soc = Math.min(state.config.capacityMwh, state.currentSocMwh + stored);
+  const totalCharged = state.totalChargedMwh + stored;
+  const entry: CycleEntry = { timestamp, action: 'charge', mw, price: logPrice, energyMwh: stored, cost: -gridMwh * logPrice };
+  return {
+    actualMw: -mw,
+    newState: {
+      ...state,
+      currentSocMwh: soc,
+      socPct: Math.round((soc / state.config.capacityMwh) * 10000) / 100,
+      totalChargedMwh: totalCharged,
+      totalCycles: totalCharged / state.config.capacityMwh,
+      cycleLog: [entry, ...state.cycleLog].slice(0, 100),
+    },
+  };
+}
+
+/** Book a cashflow: + = revenue received, − = cost paid. */
+export function bookCash(state: BatteryState, amount: number): BatteryState {
+  if (!Number.isFinite(amount) || amount === 0) return state;
+  return amount > 0
+    ? { ...state, totalDischargeRevenue: state.totalDischargeRevenue + amount }
+    : { ...state, totalChargeCost: state.totalChargeCost - amount };
+}

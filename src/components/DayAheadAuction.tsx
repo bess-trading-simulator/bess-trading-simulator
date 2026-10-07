@@ -1,525 +1,364 @@
-import { useState } from 'react';
-import type { DayAheadBid, DayAheadState } from '../engine/types';
+import { useMemo, useState } from 'react';
+import type { DayAheadBid, DayAheadState, MarketDay } from '../engine/types';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
-import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart } from '../engine/clock';
+import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
+import { DA_HOURS, hourlyPrices, bidFills } from '../engine/dayAheadAuction';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import HelpIcon from './HelpIcon';
 import { CheckCircle } from 'lucide-react';
 
 interface Props {
   dayAhead: DayAheadState;
+  nextDay: MarketDay;
   currentTime: number;
   battery: BatteryState;
   onSubmitBids: (bids: DayAheadBid[]) => void;
+  onWithdrawBids?: (hour?: number) => void;
 }
 
-export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubmitBids }: Props) {
-  const { isAuctionOpen, results, forecastPrices, playerSchedule, deliveryDay } = dayAhead;
-  const [bids, setBids] = useState<{ [period: number]: { side: string; volume: string; price: string } }>({});
-  const [submitted, setSubmitted] = useState(false);
-  const [hoveredPeriod, setHoveredPeriod] = useState<number | null>(null);
+type Draft = { buyMw: string; buyPx: string; sellMw: string; sellPx: string };
+const EMPTY: Draft = { buyMw: '', buyPx: '', sellMw: '', sellPx: '' };
+
+const hourLabel = (h: number) => `${String(h).padStart(2, '0')}–${String((h + 1) % 24).padStart(2, '0')}`;
+const num = (s: string) => (s.trim() === '' ? NaN : Number(s));
+
+function draftFromBids(bids: DayAheadBid[]): Record<number, Draft> {
+  const out: Record<number, Draft> = {};
+  for (const b of bids) {
+    const d = { ...(out[b.hour] ?? EMPTY) };
+    if (b.side === OrderSide.BUY) { d.buyMw = String(b.volumeMw); d.buyPx = String(b.price); }
+    else { d.sellMw = String(b.volumeMw); d.sellPx = String(b.price); }
+    out[b.hour] = d;
+  }
+  return out;
+}
+
+function bidsFromDraft(draft: Record<number, Draft>): DayAheadBid[] {
+  const bids: DayAheadBid[] = [];
+  for (const [h, d] of Object.entries(draft)) {
+    const hour = Number(h);
+    const bm = num(d.buyMw), bp = num(d.buyPx), sm = num(d.sellMw), spx = num(d.sellPx);
+    if (bm > 0 && Number.isFinite(bp)) bids.push({ hour, side: OrderSide.BUY, volumeMw: bm, price: bp });
+    if (sm > 0 && Number.isFinite(spx)) bids.push({ hour, side: OrderSide.SELL, volumeMw: sm, price: spx });
+  }
+  return bids;
+}
+
+export default function DayAheadAuction({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids }: Props) {
+  const { isAuctionOpen, results, playerSchedule, deliveryDay, bids: submittedBids } = dayAhead;
+  const [draft, setDraft] = useState<Record<number, Draft>>(() => draftFromBids(submittedBids));
+  const [justSubmitted, setJustSubmitted] = useState(false);
+  const [hovered, setHovered] = useState<number | null>(null);
+
+  // Re-sync the editor when the auction day changes (new auction after midnight).
+  const [syncedDay, setSyncedDay] = useState(deliveryDay);
+  if (syncedDay !== deliveryDay) {
+    setSyncedDay(deliveryDay);
+    setDraft(draftFromBids(submittedBids));
+  }
+
+  const P = battery.config.powerRatingMw;
+  const capacity = battery.config.capacityMwh;
+  const eff = battery.config.efficiencyPct / 100;
   const gateHours = hoursUntilGateClosure(currentTime);
-  // Gate closure is 09:20 UK local time — display it in UK time, not UTC.
   const gateTimeUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' })
     .format(new Date(getGateClosureTime(currentTime)));
 
-  // Calculate price thresholds to determine charge vs discharge hints
-  const sortedPrices = [...forecastPrices].filter(p => p !== 0).sort((a, b) => a - b);
-  const lowThreshold = sortedPrices.length > 0 ? sortedPrices[Math.floor(sortedPrices.length * 0.25)] : 35;
-  const highThreshold = sortedPrices.length > 0 ? sortedPrices[Math.floor(sortedPrices.length * 0.75)] : 65;
+  const forecast = useMemo(() => hourlyPrices(nextDay.daForecast), [nextDay.daForecast]);
+  const resultByHour = useMemo(() => new Map(results.map(r => [r.hour, r])), [results]);
+  const sorted = [...forecast].sort((a, b) => a - b);
+  const lowT = sorted[Math.floor(DA_HOURS * 0.25)] ?? 0;
+  const highT = sorted[Math.floor(DA_HOURS * 0.75)] ?? 0;
 
-  const handleBidChange = (period: number, field: 'side' | 'volume' | 'price', value: string) => {
-    setSubmitted(false);
-    const fPrice = forecastPrices[period] ?? 0;
-    const existing = bids[period] ?? { side: isHighPeriod(period) ? OrderSide.SELL : OrderSide.BUY, volume: '', price: '' };
+  const draftBids = bidsFromDraft(draft);
+  const submittedKey = JSON.stringify(submittedBids);
+  const isDirty = JSON.stringify(draftBids) !== submittedKey;
 
-    const updated = { ...existing, [field]: value };
-
-    // Auto-fill price with forecast when user enters volume but hasn't set a price
-    if (field === 'volume' && value && !existing.price && fPrice !== 0) {
-      updated.price = fPrice.toFixed(1);
-    }
-
-    setBids(prev => ({ ...prev, [period]: updated }));
-  };
-
-  const isHighPeriod = (period: number) => {
-    const p = forecastPrices[period] ?? 0;
-    return p >= highThreshold;
-  };
-
-  const handleSubmit = () => {
-    if (!isAuctionOpen) return;
-    const allBids = Object.entries(bids);
-    const validBids: DayAheadBid[] = [];
-    for (const [periodStr, bid] of allBids) {
-      if (!bid.volume || !bid.price) continue;
-      const vol = parseFloat(bid.volume);
-      const price = parseFloat(bid.price);
-      if (isNaN(vol) || isNaN(price) || vol <= 0) continue;
-      validBids.push({
-        period: Number(periodStr),
-        side: bid.side === 'sell' ? OrderSide.SELL : OrderSide.BUY,
-        volumeMw: vol,
-        price,
-      });
-    }
-    if (validBids.length > 0) {
-      onSubmitBids(validBids);
-      setSubmitted(true);
-      setBids({});
-      setTimeout(() => setSubmitted(false), 4000);
-    }
-  };
-
-  const bidCount = Object.values(bids).filter(b => {
-    const v = parseFloat(b.volume);
-    const p = parseFloat(b.price);
-    // Negative limit prices are valid — negative-price periods are prime charging slots.
-    return !isNaN(v) && !isNaN(p) && v > 0;
-  }).length;
-  // Project SoC across the delivery day combining already-cleared positions
-  // (in playerSchedule) and the bids currently being entered in the form.
-  // Starting SoC = current SoC, advanced through every undelivered position
-  // scheduled for any day strictly before `deliveryDay`. Most relevant case:
-  // bidding the DA auction on day D-1 for delivery on day D — the battery
-  // first has to play out today's remaining DA/ID/BM schedule.
-  const capacity = battery.config.capacityMwh;
-  const eff = battery.config.efficiencyPct / 100;
+  // Starting SoC of the delivery day: current SoC played forward through today's
+  // remaining (undelivered) net positions.
   const todayDay = getUtcDayStart(currentTime);
-  let startSocMwh = battery.currentSocMwh;
-  const priorPositions = playerSchedule
-    .filter((p) => !p.delivered && p.deliveryDay >= todayDay && p.deliveryDay < deliveryDay)
-    .sort((a, b) => (a.deliveryDay - b.deliveryDay) || (a.period - b.period));
-  for (const pos of priorPositions) {
-    if (pos.action === 'charge') startSocMwh += pos.mw * 0.5 * eff;
-    else startSocMwh -= pos.mw * 0.5;
-    startSocMwh = Math.max(0, Math.min(capacity, startSocMwh));
+  const currentSp = getSettlementPeriod(currentTime) - 1;
+  let startSoc = battery.currentSocMwh;
+  for (let sp = currentSp; sp < 48; sp++) {
+    const net = playerSchedule
+      .filter(p => !p.delivered && p.deliveryDay === todayDay && p.period === sp)
+      .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0);
+    startSoc = net > 0 ? startSoc - Math.min(net, P) * 0.5 : startSoc + Math.min(-net, P) * 0.5 * eff;
+    startSoc = Math.max(0, Math.min(capacity, startSoc));
   }
 
-  const socPctByPeriod: number[] = new Array(48).fill(0);
-  {
-    let socMwh = startSocMwh;
-    for (let sp = 0; sp < 48; sp++) {
-      let chargeMw = 0;
-      let dischargeMw = 0;
-      for (const pos of playerSchedule) {
-        if (pos.deliveryDay !== deliveryDay || pos.period !== sp) continue;
-        if (pos.action === 'charge') chargeMw += pos.mw;
-        else dischargeMw += pos.mw;
-      }
-      const bid = bids[sp];
-      if (bid) {
-        const v = parseFloat(bid.volume);
-        const pr = parseFloat(bid.price);
-        if (!isNaN(v) && v > 0 && !isNaN(pr)) {
-          if (bid.side === OrderSide.BUY) chargeMw += v;
-          else dischargeMw += v;
-        }
-      }
-      socMwh += chargeMw * 0.5 * eff;
-      socMwh -= dischargeMw * 0.5;
-      socMwh = Math.max(0, Math.min(capacity, socMwh));
-      socPctByPeriod[sp] = (socMwh / capacity) * 100;
+  // Expected net MW per hour: after clearing the real positions; before, the
+  // draft orders assumed filled IF the forecast price meets their limits.
+  const hourNet: number[] = Array.from({ length: DA_HOURS }, (_, h) => {
+    if (!isAuctionOpen) {
+      return playerSchedule
+        .filter(p => p.deliveryDay === deliveryDay && p.market === 'da' && p.period === 2 * h)
+        .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0);
     }
+    return draftBids
+      .filter(b => b.hour === h && bidFills(b, forecast[h]))
+      .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0);
+  });
+
+  // SoC path per hour (two SPs), flagging infeasible energy (→ imbalance).
+  const socPct: number[] = [];
+  let soc = startSoc;
+  let shortfallMwh = 0;
+  for (let h = 0; h < DA_HOURS; h++) {
+    const net = hourNet[h];
+    const delta = net > 0 ? -net * 1 : -net * 1 * eff; // 1 h = two SPs
+    const raw = soc + delta;
+    if (raw < 0) shortfallMwh += -raw;
+    if (raw > capacity) shortfallMwh += (raw - capacity) / eff;
+    soc = Math.max(0, Math.min(capacity, raw));
+    socPct.push((soc / capacity) * 100);
   }
 
-  // KPI aggregates for the delivery day (cleared positions + pending bids).
-  let chargeMwh = 0, dischargeMwh = 0, chargeCost = 0, dischargeRev = 0;
-  const accumulate = (action: 'charge' | 'discharge', mw: number, price: number) => {
-    const mwh = mw * 0.5;
-    if (action === 'charge') { chargeMwh += mwh; chargeCost += mwh * price; }
-    else { dischargeMwh += mwh; dischargeRev += mwh * price; }
-  };
-  for (const pos of playerSchedule) {
-    if (pos.deliveryDay !== deliveryDay) continue;
-    accumulate(pos.action, pos.mw, pos.price);
-  }
-  for (const [sp, bid] of Object.entries(bids)) {
-    const v = parseFloat(bid.volume), pr = parseFloat(bid.price);
-    if (isNaN(v) || v <= 0 || isNaN(pr)) continue;
-    accumulate(bid.side === OrderSide.BUY ? 'charge' : 'discharge', v, pr);
-    void sp;
-  }
-  const netCashflow = dischargeRev - chargeCost;
-  const socValues = socPctByPeriod.filter((v) => Number.isFinite(v));
-  const socMin = socValues.length ? Math.min(...socValues) : 0;
-  const socMax = socValues.length ? Math.max(...socValues) : 0;
-  const scheduledPositions = playerSchedule.filter((p) => p.deliveryDay === deliveryDay).length;
+  const priceFor = (h: number) => (isAuctionOpen ? forecast[h] : resultByHour.get(h)?.clearingPrice ?? forecast[h]);
+  const chargeMwh = hourNet.reduce((a, n) => a + (n < 0 ? -n : 0), 0);
+  const dischargeMwh = hourNet.reduce((a, n) => a + (n > 0 ? n : 0), 0);
+  const netCash = hourNet.reduce((a, n, h) => a + n * priceFor(h), 0);
 
-  const chartData = forecastPrices.map((price, sp) => ({
-    sp: `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`,
-    price,
-    socPct: socPctByPeriod[sp],
-    isLow: price !== 0 && price <= lowThreshold,
-    isHigh: price >= highThreshold,
+  const chartData = forecast.map((f, h) => ({
+    hour: `${String(h).padStart(2, '0')}:00`,
+    forecast: f,
+    clearing: isAuctionOpen ? null : (resultByHour.get(h)?.clearingPrice ?? hourlyPrices(nextDay.daClearing)[h]),
+    socPct: socPct[h],
+    isLow: f <= lowT,
+    isHigh: f >= highT,
   }));
+
+  const setField = (h: number, field: keyof Draft, value: string) => {
+    setJustSubmitted(false);
+    setDraft(prev => {
+      const d = { ...(prev[h] ?? EMPTY), [field]: value };
+      // Volume entered without a limit → default limit at the forecast (a coin flip!).
+      if (field === 'buyMw' && value && !d.buyPx) d.buyPx = forecast[h].toFixed(1);
+      if (field === 'sellMw' && value && !d.sellPx) d.sellPx = forecast[h].toFixed(1);
+      return { ...prev, [h]: d };
+    });
+  };
+
+  const submit = () => {
+    if (!isAuctionOpen) return;
+    onWithdrawBids?.();
+    onSubmitBids(draftBids);
+    setJustSubmitted(true);
+  };
+
+  // Preset: charge the cheapest k-hour block, discharge the dearest later block.
+  // Limits leave a margin vs forecast (pay up to +£margin / sell down to −£margin)
+  // — wider margin = more likely to fill, but you accept a worse clearing price.
+  const presetArbitrage = (margin: number) => {
+    const k = Math.max(1, Math.round(capacity / P));
+    let best = { c: 0, d: k, spread: -Infinity };
+    for (let c = 0; c + k <= DA_HOURS; c++) {
+      for (let d = c + k; d + k <= DA_HOURS; d++) {
+        const avg = (s: number) => forecast.slice(s, s + k).reduce((a, b) => a + b, 0) / k;
+        const spread = avg(d) * eff - avg(c);
+        if (spread > best.spread) best = { c, d, spread };
+      }
+    }
+    // Size to the energy actually available: fill from the projected start SoC
+    // up to full, then sell everything stored.
+    const buyMwh = Math.max(0, (capacity - startSoc) / eff);
+    const buyMw = Math.min(P, Math.round(buyMwh / k));
+    const sellMw = Math.min(P, Math.floor((startSoc + buyMw * k * eff) / k));
+    const next: Record<number, Draft> = {};
+    for (let i = 0; i < k; i++) {
+      if (buyMw > 0) next[best.c + i] = { ...EMPTY, buyMw: String(buyMw), buyPx: (forecast[best.c + i] + margin).toFixed(1) };
+      if (sellMw > 0) next[best.d + i] = { ...EMPTY, sellMw: String(sellMw), sellPx: (forecast[best.d + i] - margin).toFixed(1) };
+    }
+    setJustSubmitted(false);
+    setDraft(next);
+  };
+
+  const sourceLabel = nextDay.source === 'real' ? `Real data · ${nextDay.date ?? ''}` : 'Simulated';
 
   return (
     <div className="panel day-ahead-full" id="dayahead-tab">
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
-          <h3>Day-Ahead Auction</h3>
-          <HelpIcon text="Blind auction for the next delivery day; gate closes 09:20 UK. Simplification: real GB DA auctions at 09:20 (EPEX) and 09:50 (N2EX) trade HOURLY products — half-hourly products clear in EPEX's 15:30 auction. Here you bid per half-hour at 09:20. On real Elexon days the price line is the Market Index Price (MID), a short-term traded-price index used as DA proxy — BMRS does not publish the auction results. Green = cheap (charge). Red = expensive (discharge)." />
+          <h3>Day-Ahead Auction · hourly</h3>
+          <HelpIcon text="Blind, uniform-price auction for the next delivery day (EPEX GB 09:20 UK style, HOURLY products). Per hour you can bid to BUY (charge) up to a max price and/or SELL (discharge) down to a min price — a 2-step bid curve. At gate closure the auction clears: an order fills only if the clearing price meets its limit, and fills settle at the CLEARING price (pay-as-cleared), not your limit. You don't see the clearing price before — only the desk forecast, which has a realistic error. On real Elexon days the actual price is the Market Index Price (MID) as DA proxy." />
           <span className="da-delivery-badge">
-            Delivery <strong>{formatDeliveryDay(deliveryDay)}</strong>
+            Delivery <strong>{formatDeliveryDay(deliveryDay)}</strong> · {sourceLabel}
           </span>
         </div>
 
         <div className="kpi-strip">
           <div className="kpi-card">
-            <div className="kpi-label">Net cashflow</div>
+            <div className="kpi-label">{isAuctionOpen ? 'Expected cash' : 'Cleared cash'}</div>
             <div className="kpi-value-row">
-              <span className={`kpi-value ${netCashflow >= 0 ? 'positive' : 'negative'}`}>
-                {netCashflow >= 0 ? '+' : '−'}£{Math.abs(netCashflow).toFixed(0)}
+              <span className={`kpi-value ${netCash >= 0 ? 'positive' : 'negative'}`}>
+                {netCash >= 0 ? '+' : '−'}£{Math.abs(netCash).toFixed(0)}
               </span>
             </div>
-            <div className="kpi-sub">revenue − charge cost (cleared + pending)</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'if filled at forecast prices' : 'at clearing prices'}</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Charge</div>
             <div className="kpi-value-row">
-              <span className="kpi-value" style={{ color: 'var(--accent)' }}>{chargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
+              <span className="kpi-value" style={{ color: 'var(--charge)' }}>{chargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
             </div>
-            <div className="kpi-sub">@ avg £{chargeMwh > 0 ? (chargeCost / chargeMwh).toFixed(0) : '—'}/MWh</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'expected fills' : 'won in auction'}</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Discharge</div>
             <div className="kpi-value-row">
-              <span className="kpi-value" style={{ color: 'var(--magenta)' }}>{dischargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
+              <span className="kpi-value" style={{ color: 'var(--discharge)' }}>{dischargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
             </div>
-            <div className="kpi-sub">@ avg £{dischargeMwh > 0 ? (dischargeRev / dischargeMwh).toFixed(0) : '—'}/MWh</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'expected fills' : 'won in auction'}</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">SoC swing</div>
+            <div className="kpi-label">Energy feasibility</div>
             <div className="kpi-value-row">
-              <span className="kpi-value">{socMin.toFixed(0)}–{socMax.toFixed(0)}<span className="kpi-unit">%</span></span>
+              <span className={`kpi-value ${shortfallMwh > 0.5 ? 'negative' : ''}`}>
+                {shortfallMwh > 0.5 ? `${shortfallMwh.toFixed(0)}` : 'OK'}
+                {shortfallMwh > 0.5 && <span className="kpi-unit"> MWh</span>}
+              </span>
             </div>
-            <div className="kpi-sub">{scheduledPositions} positions scheduled</div>
+            <div className="kpi-sub">
+              {shortfallMwh > 0.5 ? 'undeliverable → settles as imbalance at SIP' : `start SoC ${((startSoc / capacity) * 100).toFixed(0)}%`}
+            </div>
           </div>
         </div>
 
         <div className="da-sticky-content">
-          {/* Forecast price chart — sticky, 2/3 width */}
           <div className="da-forecast-chart compact">
             <div className="da-forecast-head">
               <h4>
-                48-Period Price Forecast
-                <HelpIcon text="Green = charge zone (cheap). Red = discharge zone (expensive). Blue = mid-range. Line = forecast price (on real days: Market Index Price)." />
+                Hourly price · {isAuctionOpen ? 'desk forecast' : 'forecast vs clearing'}
+                <HelpIcon text="Bars = desk forecast per hourly product (blue = cheapest quarter, orange = dearest quarter). After gate closure the line shows the actual clearing price — compare to see your forecast error. Lavender = projected SoC." />
               </h4>
               <div className="da-chart-legend inline">
                 <span className="legend-item"><span className="legend-bar da-bar" /> Forecast</span>
+                {!isAuctionOpen && <span className="legend-item"><span className="legend-line id-line" /> Clearing</span>}
                 <span className="legend-item"><span className="legend-line soc-line" /> SoC%</span>
               </div>
             </div>
             <ResponsiveContainer width="100%" height={180}>
-              <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }} barCategoryGap="28%">
-                <CartesianGrid
-                  strokeDasharray="5 5"
-                  stroke="#8b95a8"
-                  strokeOpacity={1}
-                  strokeWidth={1.2}
-                  verticalCoordinatesGenerator={(props: { offset?: { left?: number; width?: number } }) => {
-                    const o = props.offset ?? {};
-                    const w = o.width ?? 0;
-                    const left = o.left ?? 0;
-                    const n = chartData.length;
-                    if (n < 2) return [];
-                    const stride = 2; // every 1h on a 48-SP day
-                    const out: number[] = [];
-                    for (let i = 0; i < n; i += stride) {
-                      out.push(left + (i / (n - 1)) * w);
-                    }
-                    return out;
-                  }}
-                />
-                <XAxis dataKey="sp" stroke="#6b7280" fontSize={9} interval={7} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="price" stroke="#6b7280" fontSize={10} width={36} tickLine={false} axisLine={false} />
-                <YAxis
-                  yAxisId="soc"
-                  orientation="right"
-                  stroke="#c7b4f8"
-                  fontSize={10}
-                  width={32}
-                  domain={[0, 100]}
-                  ticks={[0, 50, 100]}
-                  tickFormatter={(v: number) => `${v}%`}
-                  tickLine={false}
-                  axisLine={false}
-                />
+              <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -8 }} barCategoryGap="22%">
+                <CartesianGrid strokeDasharray="5 5" stroke="#8b95a8" strokeOpacity={0.5} vertical={false} />
+                <XAxis dataKey="hour" stroke="#6b7280" fontSize={9} interval={3} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="price" stroke="#6b7280" fontSize={10} width={40} tickLine={false} axisLine={false} />
+                <YAxis yAxisId="soc" orientation="right" stroke="#c7b4f8" fontSize={10} width={32} domain={[0, 100]} ticks={[0, 50, 100]} tickFormatter={(v: number) => `${v}%`} tickLine={false} axisLine={false} />
                 <Tooltip
                   cursor={{ stroke: '#9272f5', strokeWidth: 1, strokeDasharray: '2 3' }}
                   contentStyle={{ background: '#0f1420', border: '1px solid #1f2535', borderRadius: '6px', color: '#e5e7eb', fontSize: 11, padding: '6px 8px' }}
-                  labelStyle={{ color: '#6b7280', fontSize: 10, marginBottom: 2 }}
-                  itemStyle={{ color: '#e5e7eb', padding: 0 }}
                   formatter={(value: unknown, name: unknown) => {
                     if (value == null) return ['—', String(name)];
-                    const key = String(name);
-                    if (key === 'Projected SoC') {
-                      return [`${Number(value).toFixed(1)}%`, key];
-                    }
-                    return [`£${Number(value).toFixed(2)}`, key];
+                    return String(name) === 'Projected SoC' ? [`${Number(value).toFixed(0)}%`, String(name)] : [`£${Number(value).toFixed(2)}`, String(name)];
                   }}
                 />
-                <Bar yAxisId="price" dataKey="price" name="DA Forecast" radius={[2, 2, 0, 0]}>
-                  {chartData.map((entry, i) => {
-                    const isHovered = hoveredPeriod === i;
-                    const baseColor = entry.isLow ? '#007be2' : entry.isHigh ? '#ff874b' : '#9ca3af';
-                    return (
-                      <Cell
-                        key={i}
-                        fill={baseColor}
-                        fillOpacity={isHovered ? 1 : 0.6}
-                        stroke={isHovered ? '#ffffff' : 'none'}
-                        strokeWidth={isHovered ? 1.5 : 0}
-                      />
-                    );
-                  })}
+                <Bar yAxisId="price" dataKey="forecast" name="Forecast" radius={[2, 2, 0, 0]}>
+                  {chartData.map((e, i) => (
+                    <Cell key={i} fill={e.isLow ? '#007be2' : e.isHigh ? '#ff874b' : '#9ca3af'} fillOpacity={hovered === i ? 1 : 0.6} />
+                  ))}
                 </Bar>
-                <Line
-                  yAxisId="soc"
-                  type="stepAfter"
-                  dataKey="socPct"
-                  stroke="#c7b4f8"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Projected SoC"
-                  isAnimationActive={false}
-                />
+                {!isAuctionOpen && <Line yAxisId="price" type="monotone" dataKey="clearing" stroke="#76b8ef" strokeWidth={2} dot={{ r: 2 }} name="Clearing" isAnimationActive={false} />}
+                <Line yAxisId="soc" type="stepAfter" dataKey="socPct" stroke="#c7b4f8" strokeWidth={2} dot={false} name="Projected SoC" isAnimationActive={false} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Quick fill panel — sticky, 1/3 width */}
           <div className="da-quick-panel">
             <div className={`da-status-inline ${isAuctionOpen ? 'open' : 'closed'}`}>
               <div className="da-status-row">
                 <span className={`da-status-dot ${isAuctionOpen ? 'open' : 'closed'}`} />
-                <span className="da-status-label">
-                  {isAuctionOpen ? 'Auction OPEN' : 'Auction CLOSED'}
-                </span>
+                <span className="da-status-label">{isAuctionOpen ? 'Auction OPEN' : 'Auction CLEARED'}</span>
               </div>
               <div className="da-status-sub">
-                {isAuctionOpen
-                  ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left`
-                  : `Cleared · awaiting delivery`}
+                {isAuctionOpen ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left` : 'Positions are locked · trade adjustments intraday'}
               </div>
               <div className="da-status-sub">
-                Delivery day: <strong>{formatDeliveryDay(deliveryDay)}</strong>
+                {submittedBids.length} order{submittedBids.length === 1 ? '' : 's'} submitted
+                {justSubmitted && !isDirty && <span className="da-submitted"> <CheckCircle size={12} /> sent</span>}
               </div>
-              {(scheduledPositions > 0 || submitted) && (
-                <div className="da-status-meta">
-                  {scheduledPositions > 0 && (
-                    <span className="da-schedule-count">
-                      {scheduledPositions} scheduled
-                    </span>
-                  )}
-                  {submitted && (
-                    <span className="da-submitted">
-                      <CheckCircle size={12} /> Submitted
-                    </span>
-                  )}
+            </div>
+            {isAuctionOpen && (
+              <>
+                <h4>
+                  Quick fill
+                  <HelpIcon text="Arbitrage picks the cheapest block of hours to charge and a later, dearest block to discharge (by forecast), sized to your projected start SoC. 'Tight' limits = at forecast ±£2 (cheap but often not filled); 'Safe' = ±£25 (fills more often, but you accept a worse clearing price)." />
+                </h4>
+                <div className="da-quick-fill vertical">
+                  <button className="btn btn-preset" onClick={() => presetArbitrage(2)}>Arbitrage · tight</button>
+                  <button className="btn btn-preset" onClick={() => presetArbitrage(25)}>Arbitrage · safe</button>
+                  <button className="btn btn-preset" onClick={() => { setDraft({}); setJustSubmitted(false); }}>Clear</button>
                 </div>
-              )}
-            </div>
-            <h4>
-              Submit Battery Schedule
-              <HelpIcon text="Quick-fill presets generate bids across all periods. Customise individual rows in the table below." />
-            </h4>
-            <div className="da-quick-fill vertical">
-              <span className="da-quick-label">Quick Fill</span>
-              <button className="btn btn-preset" onClick={() => {
-                const pw = battery.config.powerRatingMw;
-                const eff = battery.config.efficiencyPct / 100;
-                const cap = battery.config.capacityMwh;
-                const currentSoc = battery.currentSocMwh;
-                const headroom = cap - currentSoc;
-
-                const periodPrices = Array.from({ length: 48 }, (_, period) => ({
-                  period, price: forecastPrices[period] ?? 0,
-                })).filter(x => Number.isFinite(x.price));
-                const sorted = [...periodPrices].sort((a, b) => a.price - b.price);
-
-                const newBids: typeof bids = {};
-                let chargeRemaining = headroom / (eff * 0.5);
-                for (const { period, price } of sorted) {
-                  if (chargeRemaining <= 0) break;
-                  const mw = Math.min(pw, chargeRemaining);
-                  newBids[period] = { side: OrderSide.BUY, volume: String(Math.round(mw)), price: price.toFixed(1) };
-                  chargeRemaining -= mw;
-                }
-                let dischargeRemaining = cap / 0.5;
-                for (const { period, price } of [...periodPrices].sort((a, b) => b.price - a.price)) {
-                  if (dischargeRemaining <= 0) break;
-                  if (newBids[period]) continue;
-                  const mw = Math.min(pw, dischargeRemaining);
-                  newBids[period] = { side: OrderSide.SELL, volume: String(Math.round(mw)), price: price.toFixed(1) };
-                  dischargeRemaining -= mw;
-                }
-                setBids(newBids);
-              }}>
-                Arbitrage
-              </button>
-              <button className="btn btn-preset" onClick={() => {
-                const pw = battery.config.powerRatingMw;
-                const eff = battery.config.efficiencyPct / 100;
-                const cap = battery.config.capacityMwh;
-                const headroom = (cap - battery.currentSocMwh) / (eff * 0.5);
-                const sorted = Array.from({ length: 48 }, (_, period) => ({
-                  period, price: forecastPrices[period] ?? 0,
-                })).filter(x => Number.isFinite(x.price)).sort((a, b) => a.price - b.price);
-                const newBids: typeof bids = {};
-                let remaining = headroom;
-                for (const { period, price } of sorted) {
-                  if (remaining <= 0) break;
-                  const mw = Math.min(pw, remaining);
-                  newBids[period] = { side: OrderSide.BUY, volume: String(Math.round(mw)), price: price.toFixed(1) };
-                  remaining -= mw;
-                }
-                setBids(newBids);
-              }}>
-                Charge only
-              </button>
-              <button className="btn btn-preset" onClick={() => {
-                const pw = battery.config.powerRatingMw;
-                const available = battery.currentSocMwh / 0.5;
-                const sorted = Array.from({ length: 48 }, (_, period) => ({
-                  period, price: forecastPrices[period] ?? 0,
-                })).filter(x => Number.isFinite(x.price)).sort((a, b) => b.price - a.price);
-                const newBids: typeof bids = {};
-                let remaining = available;
-                for (const { period, price } of sorted) {
-                  if (remaining <= 0) break;
-                  const mw = Math.min(pw, remaining);
-                  newBids[period] = { side: OrderSide.SELL, volume: String(Math.round(mw)), price: price.toFixed(1) };
-                  remaining -= mw;
-                }
-                setBids(newBids);
-              }}>
-                Discharge only
-              </button>
-              <button className="btn btn-preset" onClick={() => setBids({})}>
-                Clear
-              </button>
-            </div>
-            <button
-              className={`btn btn-submit da-submit-inline ${bidCount > 0 ? 'btn-buy' : ''}`}
-              onClick={handleSubmit}
-              disabled={bidCount === 0 || !isAuctionOpen}
-            >
-              {submitted
-                ? '✓ Submitted'
-                : bidCount > 0
-                  ? `Submit ${bidCount} Bid${bidCount > 1 ? 's' : ''}`
-                  : 'No bids to submit'}
-            </button>
+                <button
+                  className={`btn btn-submit da-submit-inline ${isDirty ? 'btn-buy' : ''}`}
+                  onClick={submit}
+                  disabled={!isDirty}
+                >
+                  {isDirty ? `Submit ${draftBids.length} order${draftBids.length === 1 ? '' : 's'}` : submittedBids.length ? 'Orders up to date' : 'No orders yet'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Auction results */}
-      {results.length > 0 && (
-        <div className="da-results">
-          <h4>Auction Results</h4>
-          <div className="da-results-scroll">
-            <table className="data-table">
-              <thead>
-                <tr><th>Time</th><th>Clearing</th><th>Your Action</th><th>Status</th></tr>
-              </thead>
-              <tbody>
-                {results.map(r => (
-                  <tr key={r.period} className={r.accepted ? 'row-accepted' : ''}>
-                    <td>{String(Math.floor(r.period / 2)).padStart(2, '0')}:{r.period % 2 === 0 ? '00' : '30'}</td>
-                    <td>£{r.clearingPrice.toFixed(2)}</td>
-                    <td>
-                      {r.playerVolume > 0 ? `Charge ${r.playerVolume} MW` :
-                       r.playerVolume < 0 ? `Discharge ${Math.abs(r.playerVolume)} MW` : '—'}
-                    </td>
-                    <td className={r.accepted ? 'positive' : 'muted'}>
-                      {r.accepted ? 'Accepted' : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Bid entry — always visible so user can enter bids */}
       <div className="da-bid-section">
         {!isAuctionOpen && (
           <div className="da-gate-warning">
-            Gate has closed for this delivery day — no more bids. The next auction opens after midnight for the following day.
+            Gate closed — the auction has cleared for {formatDeliveryDay(deliveryDay)}. Adjust positions in the Intraday market (tomorrow's products are now open there). The next auction opens after midnight.
           </div>
         )}
-          <div className="da-bid-scroll">
-            <table className="data-table bid-table">
-              <thead>
-                <tr><th>SP</th><th>Forecast</th><th>Hint</th><th>Action</th><th>MW</th><th>Price £</th></tr>
-              </thead>
-              <tbody>
-                {Array.from({ length: 48 }, (_, sp) => {
-                  const fPrice = forecastPrices[sp] ?? 0;
-                  const bid = bids[sp];
-                  const isLow = fPrice !== 0 && fPrice <= lowThreshold;
-                  const isHigh = fPrice >= highThreshold;
-                  const isMid = fPrice !== 0 && !isLow && !isHigh;
-                  const defaultSide = isHigh ? OrderSide.SELL : OrderSide.BUY;
-                  const isHoveredRow = hoveredPeriod === sp;
-                  return (
-                    <tr
-                      key={sp}
-                      className={`${isLow ? 'row-charge-hint' : isHigh ? 'row-discharge-hint' : ''} ${isHoveredRow ? 'row-hovered' : ''}`}
-                      onMouseEnter={() => setHoveredPeriod(sp)}
-                      onMouseLeave={() => setHoveredPeriod(null)}
-                    >
-                      <td>{String(Math.floor(sp / 2)).padStart(2, '0')}:{sp % 2 === 0 ? '00' : '30'}</td>
-                      <td className="muted">£{fPrice.toFixed(1)}</td>
-                      <td className="da-hint">
-                        {isLow && <span className="hint-charge">Charge</span>}
-                        {isHigh && <span className="hint-discharge">Discharge</span>}
-                        {isMid && <span className="hint-mid">—</span>}
-                        {fPrice === 0 && <span className="hint-mid">N/A</span>}
-                      </td>
-                      <td>
-                        <select
-                          value={bid?.side ?? defaultSide}
-                          onChange={e => handleBidChange(sp, 'side', e.target.value)}
-                          className="input input-sm"
-                        >
-                          <option value={OrderSide.BUY}>Charge</option>
-                          <option value={OrderSide.SELL}>Discharge</option>
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          value={bid?.volume ?? ''}
-                          onChange={e => handleBidChange(sp, 'volume', e.target.value)}
-                          placeholder="0"
-                          min="1" max="50"
-                          className="input input-sm"
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          value={bid?.price ?? ''}
-                          onChange={e => handleBidChange(sp, 'price', e.target.value)}
-                          placeholder={fPrice > 0 ? fPrice.toFixed(0) : ''}
-                          step="0.5"
-                          className="input input-sm"
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div className="da-bid-scroll">
+          <table className="data-table bid-table">
+            <thead>
+              <tr>
+                <th>Hour</th>
+                <th>Forecast</th>
+                <th>Buy MW</th>
+                <th>Max £</th>
+                <th>Sell MW</th>
+                <th>Min £</th>
+                <th>{isAuctionOpen ? 'Fill at forecast?' : 'Clearing · result'}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {forecast.map((f, h) => {
+                const d = draft[h] ?? EMPTY;
+                const r = resultByHour.get(h);
+                const rowBids = draftBids.filter(b => b.hour === h);
+                const expected = rowBids.map(b => `${b.side === OrderSide.BUY ? 'Buy' : 'Sell'} ${bidFills(b, f) ? '✓' : '✗'}`).join(' · ');
+                return (
+                  <tr
+                    key={h}
+                    className={`${f <= lowT ? 'row-charge-hint' : f >= highT ? 'row-discharge-hint' : ''} ${hovered === h ? 'row-hovered' : ''}`}
+                    onMouseEnter={() => setHovered(h)}
+                    onMouseLeave={() => setHovered(null)}
+                  >
+                    <td>{hourLabel(h)}</td>
+                    <td className="muted">£{f.toFixed(1)}</td>
+                    <td><input className="input" type="number" min={0} max={P} step={1} value={d.buyMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyMw', e.target.value)} placeholder="" /></td>
+                    <td><input className="input" type="number" step={0.5} value={d.buyPx} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyPx', e.target.value)} placeholder="—" /></td>
+                    <td><input className="input" type="number" min={0} max={P} step={1} value={d.sellMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'sellMw', e.target.value)} placeholder="" /></td>
+                    <td><input className="input" type="number" step={0.5} value={d.sellPx} disabled={!isAuctionOpen} onChange={e => setField(h, 'sellPx', e.target.value)} placeholder="—" /></td>
+                    <td className="muted">
+                      {isAuctionOpen
+                        ? (expected || '—')
+                        : r
+                          ? (
+                            <span>
+                              £{r.clearingPrice.toFixed(2)} ·{' '}
+                              {r.buyMw > 0 && <span className={r.buyFilled ? 'positive' : 'negative'}>Buy {r.buyFilled ? 'filled' : 'not filled'} </span>}
+                              {r.sellMw > 0 && <span className={r.sellFilled ? 'positive' : 'negative'}>Sell {r.sellFilled ? 'filled' : 'not filled'}</span>}
+                            </span>
+                          )
+                          : `£${hourlyPrices(nextDay.daClearing)[h].toFixed(2)}`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
+      </div>
     </div>
   );
 }

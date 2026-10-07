@@ -32,7 +32,8 @@ import HeaderMenu from './components/HeaderMenu';
 export default function App() {
   const {
     state, dataSource, togglePause, setSpeed, stepForward,
-    chargeBattery, dischargeBattery, placeDayAheadBids, configureBattery,
+    chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid, configureBattery,
+    placeIntradayOrder, cancelIntradayOrder,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, loadSavedState, reset,
   } = useGameState();
@@ -78,7 +79,6 @@ export default function App() {
 
   const visibleTabs: AppView[] = enabledViews ? [...enabledViews, 'forecast', 'analysis'] : [];
 
-  const currentHour = new Date(state.clock.currentTime).getUTCHours();
 
   if (appMode === 'start') {
     return (
@@ -108,6 +108,8 @@ export default function App() {
         onConfigureBattery={configureBattery}
         onIntradayCharge={intradayCharge}
         onIntradayDischarge={intradayDischarge}
+        onPlaceIntradayOrder={placeIntradayOrder}
+        onCancelIntradayOrder={cancelIntradayOrder}
         onSubmitBmOffer={submitBmOffer}
         onSetMode={setMode}
         onPlayScenario={playScenario}
@@ -243,13 +245,9 @@ export default function App() {
         {view === 'intraday' && (
           <div className="grid-main-full">
             <IntradayTrading
-              dayAhead={state.dayAhead}
-              battery={state.battery}
-              currentPrice={state.currentPrice?.price ?? 0}
-              currentTime={state.clock.currentTime}
-              currentHour={currentHour}
-              onIntradayCharge={intradayCharge}
-              onIntradayDischarge={intradayDischarge}
+              state={state}
+              onPlaceOrder={placeIntradayOrder}
+              onCancelOrder={cancelIntradayOrder}
             />
             <SupportPanels state={state} lessonId={3} compact />
           </div>
@@ -259,9 +257,11 @@ export default function App() {
           <div className="grid-main-full">
             <DayAheadAuction
               dayAhead={state.dayAhead}
+              nextDay={state.nextDay}
               currentTime={state.clock.currentTime}
               battery={state.battery}
               onSubmitBids={placeDayAheadBids}
+              onWithdrawBids={withdrawDayAheadBid}
             />
             <SupportPanels state={state} lessonId={2} compact />
           </div>

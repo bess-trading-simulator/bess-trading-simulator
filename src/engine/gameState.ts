@@ -1,51 +1,65 @@
-import type { GameState, DayAheadBid, Trade, DayAheadState, BmDirection, BmOffer, BmState } from './types';
-import { OrderSide, MarketType, GameMode } from './types';
-import { createClock, tick, getGateClosureTime, getNextDeliveryDay, getSettlementPeriod, getUtcDayStart, isIntradayGateOpen } from './clock';
+import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay } from './types';
+import { OrderSide, GameMode } from './types';
+import { createClock, tick, getGateClosureTime, getSettlementPeriod, getUtcDayStart } from './clock';
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
-import { createBattery, chargeBattery, dischargeBattery } from './battery';
-import { generateGBDayAhead, generateSIPOutturn, generateImbalanceDay, deriveForecastsFromNiv, generateFullAnalysis, imbalanceSettlementPrice } from './ukMarket';
+import { createBattery } from './battery';
+import { generateFullAnalysis, imbalanceSettlementPrice } from './ukMarket';
 import type { TradePosition } from './ukMarket';
-import { clearDayAheadAuction } from './market';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
-import { getIntradayPrice } from './intradayPricing';
+import { syntheticMarketDay, templatedMarketDay, scenarioMarketDay } from './marketDay';
+import { clearHourlyAuction, sanitizeBids } from './dayAheadAuction';
+import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
+import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
+import type { PlaceOrderInput } from './intradayBook';
 
 interface InternalState extends GameState {
   _priceGenState: PriceGeneratorState;
 }
 
-function createDayAheadState(currentTime: number, seed: number): DayAheadState {
-  // The auction running on day D-1 produces a schedule for day D.
-  // Forecast / outturn arrays here describe the DELIVERY day, not the auction day.
-  const deliveryDay = getNextDeliveryDay(currentTime);
-  const isWeekday = new Date(deliveryDay).getUTCDay() > 0 && new Date(deliveryDay).getUTCDay() < 6;
-  const windPct = 0.2 + Math.sin(seed * 0.1) * 0.15;
-  const forecastPrices = generateGBDayAhead(seed, isWeekday, windPct);
-  // NIV emerges from independent wind/demand drivers (see generateImbalanceDay).
-  const drivers = generateImbalanceDay(seed + 2000, isWeekday);
-  const sipOutturn = generateSIPOutturn(forecastPrices, drivers.niv);
+const DAY_MS = 86_400_000;
 
+/**
+ * Day-ahead/market state at the START of a day: `today` is the delivery day now
+ * running (its DA prices cleared yesterday), `next` is the day the auction that
+ * opens now is for. The two are kept strictly separate.
+ */
+function dayAheadForDay(
+  today: MarketDay,
+  next: MarketDay,
+  currentTime: number,
+  playerSchedule: TradePosition[],
+): DayAheadState {
   return {
     bids: [],
     results: [],
     gateClosureTime: getGateClosureTime(currentTime),
     isAuctionOpen: true,
-    deliveryDay,
-    nextDeliveryDay: deliveryDay,
-    forecastPrices,
-    sipOutturn,
-    niv: drivers.niv,
-    demandForecast: drivers.demandForecast,
-    windForecast: drivers.windForecast,
-    solarForecast: drivers.solarForecast,
-    demandOutturn: drivers.demandOutturn,
-    windOutturn: drivers.windOutturn,
-    solarOutturn: drivers.solarOutturn,
-    revealedPeriods: 0,
-    playerSchedule: [],
+    deliveryDay: next.day,
+    nextDeliveryDay: next.day,
+    todaySource: today.source,
+    forecastPrices: today.daClearing,
+    sipOutturn: today.sipOutturn,
+    niv: today.niv,
+    demandForecast: today.demandForecast,
+    windForecast: today.windForecast,
+    solarForecast: today.solarForecast,
+    demandOutturn: today.demandOutturn,
+    windOutturn: today.windOutturn,
+    solarOutturn: today.solarOutturn,
+    revealedPeriods: Math.max(0, getSettlementPeriod(currentTime) - 1),
+    playerSchedule,
   };
+}
+
+/** Synthetic next day; shaped like today when today is real (keeps price levels plausible). */
+function nextSyntheticDay(today: MarketDay, seed: number): MarketDay {
+  const day = today.day + DAY_MS;
+  return today.source === 'real'
+    ? templatedMarketDay(day, today.daClearing, seed)
+    : syntheticMarketDay(day, seed);
 }
 
 function createBmState(): BmState {
@@ -56,6 +70,9 @@ export function createGameState(): GameState {
   const clock = createClock();
   const priceGen = createPriceGenerator();
   const { price: initialPrice, newState: newPriceGen } = generateNextHour(priceGen, clock.currentTime);
+  const day = getUtcDayStart(clock.currentTime);
+  const today = syntheticMarketDay(day, priceGen.seed);
+  const next = syntheticMarketDay(day + DAY_MS, priceGen.seed + 1);
 
   const state: InternalState = {
     clock: { ...clock, speed: 'slow' },
@@ -66,106 +83,133 @@ export function createGameState(): GameState {
     events: [],
     mode: GameMode.ARBITRAGE,
     tutorial: { currentStep: 0, isActive: false, completed: true },
-    dayAhead: createDayAheadState(clock.currentTime, priceGen.seed),
+    dayAhead: dayAheadForDay(today, next, clock.currentTime, []),
     bm: createBmState(),
     analysis: null,
     triadAlert: false,
+    nextDay: next,
+    intraday: createIntradayState(),
+    ledger: [],
     _priceGenState: newPriceGen,
   };
 
-  return state;
+  return ensureMids(state);
+}
+
+/**
+ * Start a fresh session on `today` (00:00) with `next` as the auction's
+ * delivery day. Used for live data and scenarios.
+ */
+export function loadMarketDays(state: GameState, today: MarketDay, next: MarketDay): GameState {
+  const clock = createClock(new Date(today.day));
+  const firstSip = today.sipOutturn[0] ?? 0;
+  const initialPrice = {
+    timestamp: clock.currentTime,
+    price: firstSip,
+    demandMw: 30000,
+    renewablePct: 0.25,
+    basePrice: today.daClearing[0] ?? firstSip,
+    eventImpact: 0,
+  };
+  return ensureMids({
+    ...state,
+    clock: { ...clock, speed: 'slow' },
+    priceHistory: [initialPrice],
+    currentPrice: initialPrice,
+    battery: createBattery(state.battery.config),
+    trades: [],
+    events: [],
+    bm: createBmState(),
+    analysis: null,
+    triadAlert: false,
+    dayAhead: dayAheadForDay(today, next, clock.currentTime, []),
+    nextDay: next,
+    intraday: createIntradayState(),
+    ledger: [],
+  });
+}
+
+/**
+ * Replace the next delivery day's data (e.g. with real Elexon data that just
+ * arrived). Only while its auction is still open — never after clearing.
+ */
+export function replaceNextDay(state: GameState, next: MarketDay): GameState {
+  if (next.day !== state.nextDay.day || !state.dayAhead.isAuctionOpen) return state;
+  return { ...state, nextDay: next };
 }
 
 export function tickGameState(state: GameState): GameState {
   const gs = state as InternalState;
   const newClock = tick(gs.clock);
   if (newClock.currentTime === gs.clock.currentTime) return gs;
+  const now = newClock.currentTime;
 
   const priceGenState = gs._priceGenState ?? createPriceGenerator();
-  const { price: syntheticPrice, newState: newPriceGen } = generateNextHour(priceGenState, newClock.currentTime);
+  const { price: syntheticPrice, newState: newPriceGen } = generateNextHour(priceGenState, now);
 
-  // Use real SIP outturn price when live data is available for this period
-  const currentPeriod_ = getSettlementPeriod(newClock.currentTime) - 1;
-  const liveSip = gs.dayAhead.sipOutturn[currentPeriod_];
-  const hasLivePrice = liveSip !== undefined && liveSip !== 0;
-  const newPrice = hasLivePrice
-    ? { ...syntheticPrice, price: liveSip, basePrice: gs.dayAhead.forecastPrices[currentPeriod_] ?? syntheticPrice.basePrice }
+  let s: GameState = { ...gs, clock: newClock as GameState['clock'] };
+
+  // 1) Settle the SP that just ended at its (now published) SIP — using the data
+  //    of the day it belonged to, before any day rollover.
+  const prevDay = getUtcDayStart(gs.clock.currentTime);
+  const prevSp = getSettlementPeriod(gs.clock.currentTime) - 1;
+  s = settlePeriod(s, prevDay, prevSp, gs.dayAhead.sipOutturn[prevSp] ?? 0);
+
+  // 2) Midnight: tomorrow becomes today, a new auction opens for the day after.
+  const currentDayStart = getUtcDayStart(now);
+  if (currentDayStart !== prevDay) {
+    const today = s.nextDay.day === currentDayStart ? s.nextDay : syntheticMarketDay(currentDayStart, priceGenState.seed + newPriceGen.tickCount);
+    const next = nextSyntheticDay(today, priceGenState.seed + newPriceGen.tickCount + 1);
+    const carried = s.dayAhead.playerSchedule.filter(p => !p.delivered && p.deliveryDay >= currentDayStart);
+    s = {
+      ...s,
+      dayAhead: dayAheadForDay(today, next, now, carried),
+      nextDay: next,
+      bm: createBmState(),
+      ledger: s.ledger.filter(e => e.deliveryDay >= currentDayStart - DAY_MS),
+    };
+  }
+
+  // 3) SPs that have ended today are revealed (SIP/NIV published ex-post).
+  const currentSp = getSettlementPeriod(now) - 1;
+  s = { ...s, dayAhead: { ...s.dayAhead, revealedPeriods: currentSp } };
+
+  // 4) DA gate closure: clear the blind auction, pay-as-cleared.
+  if (s.dayAhead.isAuctionOpen && s.dayAhead.gateClosureTime && now >= s.dayAhead.gateClosureTime) {
+    const { results, positions } = clearHourlyAuction(s.dayAhead.bids, s.nextDay, now);
+    s = {
+      ...s,
+      dayAhead: {
+        ...s.dayAhead,
+        results,
+        isAuctionOpen: false,
+        playerSchedule: [...s.dayAhead.playerSchedule, ...positions],
+      },
+    };
+  }
+
+  // 5) Physical delivery of the SP starting now (net contracts, one dispatch).
+  s = deliverPeriod(s, currentDayStart, currentSp);
+
+  // 6) Intraday market moves; resting orders match or expire at T-60.
+  s = ensureMids(tickIntraday(s));
+
+  // Current price shown in the cockpit: today's DA price for the running SP
+  // (the SIP is only known after the SP ends).
+  const daNow = s.dayAhead.forecastPrices[currentSp];
+  const newPrice = Number.isFinite(daNow) && daNow !== 0
+    ? { ...syntheticPrice, price: daNow, basePrice: daNow }
     : syntheticPrice;
 
-  const event = maybeGenerateEvent(newClock.currentTime, newPrice, newPriceGen.tickCount);
+  const event = maybeGenerateEvent(now, newPrice, newPriceGen.tickCount);
   const newEvents = event ? [event, ...gs.events].slice(0, 50) : gs.events;
-
-  // Day-ahead transition logic
-  let dayAhead = { ...gs.dayAhead };
-  let bm = gs.bm ?? createBmState();
-  const newTrades = [...gs.trades];
-  let battery = gs.battery;
+  let battery = s.battery;
+  const dayAhead = s.dayAhead;
   let analysis = gs.analysis;
-
-  // Reveal SIP outturn gradually (1 SP per tick for realism)
-  if (dayAhead.revealedPeriods < 48) {
-    dayAhead = { ...dayAhead, revealedPeriods: dayAhead.revealedPeriods + 1 };
-  }
-
-  // Clear DA auction at gate closure
-  if (gs.dayAhead.isAuctionOpen && gs.dayAhead.gateClosureTime && newClock.currentTime >= gs.dayAhead.gateClosureTime) {
-    if (gs.dayAhead.bids.length > 0) {
-      const results = clearDayAheadAuction(gs.dayAhead.bids, gs.dayAhead.forecastPrices, newPriceGen.tickCount);
-
-      dayAhead = { ...dayAhead, results, isAuctionOpen: false };
-    } else {
-      dayAhead = { ...dayAhead, isAuctionOpen: false };
-    }
-  }
-
-  // Start new DA period: when we cross midnight into a new day.
-  // The previous day's playerSchedule (now today's deliveries) is preserved.
-  const currentDayStart = getUtcDayStart(newClock.currentTime);
-  const prevDayStart = getUtcDayStart(gs.clock.currentTime);
-  const dayChanged = currentDayStart !== prevDayStart;
-
-  if (dayChanged) {
-    const fresh = createDayAheadState(newClock.currentTime, priceGenState.seed + newPriceGen.tickCount);
-    // Keep any pending positions that are due today or in the future (e.g. just-cleared DA bids for the new delivery day).
-    const carriedSchedule = gs.dayAhead.playerSchedule.filter(p => !p.delivered && p.deliveryDay >= currentDayStart);
-    dayAhead = { ...fresh, playerSchedule: carriedSchedule };
-    bm = createBmState();
-  }
-
-  const currentPeriod = getSettlementPeriod(newClock.currentTime) - 1;
-  const deliveredSchedule = dayAhead.playerSchedule.map(position => {
-    if (position.delivered) return position;
-    if (position.deliveryDay !== currentDayStart) return position;
-    if (position.period !== currentPeriod) return position;
-
-    const result = position.action === 'charge'
-      ? chargeBattery(battery, position.mw, position.price, newClock.currentTime)
-      : dischargeBattery(battery, position.mw, position.price, newClock.currentTime);
-
-    if ('error' in result) return { ...position, delivered: true };
-
-    battery = result.newState;
-    newTrades.push({
-      orderId: `${position.market}-${position.action}-${position.period}-${position.lockedAt}`,
-      side: position.action === 'charge' ? OrderSide.BUY : OrderSide.SELL,
-      volumeMw: result.entry.mw,
-      price: position.price,
-      timestamp: newClock.currentTime,
-      marketType: position.market === 'da'
-        ? MarketType.DAY_AHEAD
-        : position.market === 'id'
-          ? MarketType.INTRADAY
-          : position.market === 'bm'
-            ? MarketType.BM
-            : MarketType.SPOT,
-    });
-
-    return { ...position, delivered: true };
-  });
-  dayAhead = { ...dayAhead, playerSchedule: deliveredSchedule };
-
+  const bm = s.bm;
+  const newClock_ = newClock;
   // Triad alert (Nov-Feb, 4-7pm weekday, cold/low wind)
-  const d = new Date(newClock.currentTime);
+  const d = new Date(newClock_.currentTime);
   const month = d.getUTCMonth();
   const dow = d.getUTCDay();
   const hr = d.getUTCHours();
@@ -174,7 +218,7 @@ export function tickGameState(state: GameState): GameState {
 
   // Mode-specific effects (frequency events, BOAs, triad warnings)
   const modeEffects = modeTickEffects(
-    { ...gs, currentPrice: newPrice, battery },
+    { ...s, currentPrice: newPrice, battery },
     newPriceGen.tickCount,
   );
 
@@ -189,35 +233,10 @@ export function tickGameState(state: GameState): GameState {
     };
   }
 
-  // Regenerate analysis whenever we have revealed SPs
+  // Post-trade analysis of today's settled SPs (net position per SP).
   if (dayAhead.revealedPeriods >= 4) {
-    // Collect ALL player trades as TradePosition format for analysis
-    const allPlayerTrades: TradePosition[] = [
-      ...dayAhead.playerSchedule,
-    ];
-
-    // Add spot and intraday trades (map from Trade to TradePosition)
-    for (const t of newTrades) {
-      const sp = Math.floor((new Date(t.timestamp).getUTCHours() * 2) + (new Date(t.timestamp).getUTCMinutes() >= 30 ? 1 : 0));
-      const marketMap: Record<string, 'spot' | 'da' | 'id' | 'bm'> = {
-        [MarketType.SPOT]: 'spot',
-        [MarketType.DAY_AHEAD]: 'da',
-        [MarketType.INTRADAY]: 'id',
-        [MarketType.BM]: 'bm',
-      };
-      allPlayerTrades.push({
-        period: sp,
-        deliveryDay: getUtcDayStart(t.timestamp),
-        market: marketMap[t.marketType] ?? 'spot',
-        action: t.side === OrderSide.BUY ? 'charge' : 'discharge',
-        mw: t.volumeMw,
-        price: t.price,
-        lockedAt: t.timestamp,
-      });
-    }
-
     analysis = generateFullAnalysis(
-      allPlayerTrades,
+      analysisPositions({ ...s, battery }, currentDayStart),
       dayAhead.forecastPrices,
       dayAhead.sipOutturn,
       dayAhead.niv,
@@ -231,11 +250,10 @@ export function tickGameState(state: GameState): GameState {
   const priceHistory = [...gs.priceHistory, newPrice].slice(-168);
 
   return {
-    clock: newClock,
+    ...s,
     priceHistory,
     currentPrice: newPrice,
     battery,
-    trades: newTrades,
     events: allEvents,
     mode: gs.mode,
     tutorial: gs.tutorial,
@@ -244,7 +262,7 @@ export function tickGameState(state: GameState): GameState {
     analysis,
     triadAlert: triadAlert || !!modeEffects.triadWarning,
     _priceGenState: newPriceGen,
-  } as unknown as InternalState;
+  } as InternalState;
 }
 
 export function stepForwardAction(state: GameState): GameState {
@@ -256,156 +274,67 @@ export function stepForwardAction(state: GameState): GameState {
   return { ...result, clock: { ...result.clock, isPaused: gs.clock.isPaused } };
 }
 
-/** Imbalance/spot settlement price for the current SP. Reads the canonical
- *  NIV-derived `sipOutturn` curve so settlement, the SIP line and post-trade
- *  analysis all agree. Falls back to recomputing if the curve is missing. */
-function currentImbalancePrice(state: GameState): number {
-  if (!state.currentPrice) return 0;
+/** SIP of the running SP (hidden from the UI until it ends) — used for the cycle-log display only. */
+function runningSpSip(state: GameState): number {
   const sp = getSettlementPeriod(state.clock.currentTime) - 1;
   const sip = state.dayAhead.sipOutturn[sp];
   if (Number.isFinite(sip) && sip !== 0) return sip;
-  const da = state.dayAhead.forecastPrices[sp] ?? state.currentPrice.price;
-  return imbalanceSettlementPrice(da, state.dayAhead.niv[sp] ?? 0);
-}
-
-export function chargeBatteryAction(state: GameState, mw: number): GameState {
-  if (!state.currentPrice) return state;
-  const price = currentImbalancePrice(state);
-  const result = chargeBattery(state.battery, mw, price, state.clock.currentTime);
-  if ('error' in result) return state;
-
-  const trade: Trade = {
-    orderId: `spot-charge-${Date.now()}`,
-    side: OrderSide.BUY,
-    volumeMw: result.entry.mw,
-    price: result.entry.price,
-    timestamp: state.clock.currentTime,
-    marketType: MarketType.SPOT,
-  };
-
-  return { ...state, battery: result.newState, trades: [...state.trades, trade] };
-}
-
-export function dischargeBatteryAction(state: GameState, mw: number): GameState {
-  if (!state.currentPrice) return state;
-  const price = currentImbalancePrice(state);
-  const result = dischargeBattery(state.battery, mw, price, state.clock.currentTime);
-  if ('error' in result) return state;
-
-  const trade: Trade = {
-    orderId: `spot-discharge-${Date.now()}`,
-    side: OrderSide.SELL,
-    volumeMw: result.entry.mw,
-    price: result.entry.price,
-    timestamp: state.clock.currentTime,
-    marketType: MarketType.SPOT,
-  };
-
-  return { ...state, battery: result.newState, trades: [...state.trades, trade] };
-}
-
-export function submitDayAheadBids(state: GameState, bids: DayAheadBid[]): GameState {
-  // Bids are only accepted before gate closure (09:20 UK) of the open auction.
-  const { isAuctionOpen, gateClosureTime } = state.dayAhead;
-  if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
-  const deliveryDay = state.dayAhead.deliveryDay;
-  const schedule: TradePosition[] = bids.map(b => ({
-    period: b.period,
-    deliveryDay,
-    market: 'da' as const,
-    action: b.side === OrderSide.BUY ? 'charge' as const : 'discharge' as const,
-    mw: b.volumeMw,
-    price: b.price,
-    lockedAt: state.clock.currentTime,
-  }));
-
-  return {
-    ...state,
-    dayAhead: {
-      ...state.dayAhead,
-      bids: [...state.dayAhead.bids, ...bids],
-      playerSchedule: [...state.dayAhead.playerSchedule, ...schedule],
-    },
-  };
-}
-
-function getIntradayExecutionPrice(state: GameState, sp: number): number {
-  return getIntradayPrice({
-    forecastPrices: state.dayAhead.forecastPrices,
-    sipOutturn: state.dayAhead.sipOutturn,
-    revealedPeriods: state.dayAhead.revealedPeriods,
-    currentPrice: state.currentPrice?.price ?? 50,
-    period: sp,
-  });
-}
-
-/** Net contracted MW in an SP of a day (+ = discharge/sell, − = charge/buy). */
-function netContractedMw(state: GameState, deliveryDay: number, sp: number): number {
-  return state.dayAhead.playerSchedule
-    .filter(p => p.deliveryDay === deliveryDay && p.period === sp)
-    .reduce((acc, p) => acc + (p.action === 'discharge' ? p.mw : -p.mw), 0);
+  return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, state.dayAhead.niv[sp] ?? 0);
 }
 
 /**
- * Validate an intraday trade: the SP must still be before ID gate closure
- * (T-60), and the resulting net position may not exceed the power rating.
- * Returns the tradable MW (possibly reduced), or 0 if the trade is rejected.
+ * Imbalance view: deliberately charge MORE than contracted in the running SP.
+ * This is not a trade — it is a deviation from your notified position, settled
+ * at the SIP once it is published after the SP.
  */
-function allowedIntradayMw(state: GameState, sp: number, mw: number, action: 'charge' | 'discharge'): number {
-  if (sp < 0 || sp > 47 || mw <= 0) return 0;
-  if (!isIntradayGateOpen(state.clock.currentTime, sp)) return 0;
-  const p = state.battery.config.powerRatingMw;
-  const net = netContractedMw(state, getUtcDayStart(state.clock.currentTime), sp);
-  const room = action === 'discharge' ? p - net : p + net;
-  return Math.max(0, Math.min(mw, room));
+export function chargeBatteryAction(state: GameState, mw: number): GameState {
+  const day = getUtcDayStart(state.clock.currentTime);
+  const sp = getSettlementPeriod(state.clock.currentTime) - 1;
+  return applyDeviation(state, day, sp, -Math.abs(mw), runningSpSip(state));
 }
 
-// Intraday trading: schedule charge/discharge at a specific SP's intraday price.
-// Intraday trades the current delivery day (the day the player is currently in).
-export function intradayChargeAction(state: GameState, sp: number, requestedMw: number): GameState {
-  const mw = allowedIntradayMw(state, sp, requestedMw, 'charge');
-  if (mw <= 0) return state;
-  const price = getIntradayExecutionPrice(state, sp);
-  const position: TradePosition = {
-    period: sp,
-    deliveryDay: getUtcDayStart(state.clock.currentTime),
-    market: 'id',
-    action: 'charge',
-    mw,
-    price,
-    lockedAt: state.clock.currentTime,
-  };
-
-  return {
-    ...state,
-    dayAhead: {
-      ...state.dayAhead,
-      playerSchedule: [...state.dayAhead.playerSchedule, position],
-    },
-  };
+/** Imbalance view: deliberately discharge MORE than contracted in the running SP. */
+export function dischargeBatteryAction(state: GameState, mw: number): GameState {
+  const day = getUtcDayStart(state.clock.currentTime);
+  const sp = getSettlementPeriod(state.clock.currentTime) - 1;
+  return applyDeviation(state, day, sp, Math.abs(mw), runningSpSip(state));
 }
 
-export function intradayDischargeAction(state: GameState, sp: number, requestedMw: number): GameState {
-  const mw = allowedIntradayMw(state, sp, requestedMw, 'discharge');
-  if (mw <= 0) return state;
-  const price = getIntradayExecutionPrice(state, sp);
-  const position: TradePosition = {
-    period: sp,
-    deliveryDay: getUtcDayStart(state.clock.currentTime),
-    market: 'id',
-    action: 'discharge',
-    mw,
-    price,
-    lockedAt: state.clock.currentTime,
-  };
+/**
+ * Submit hourly DA orders for the open auction. Orders only become positions
+ * when the auction clears at gate closure (and only if the clearing price
+ * meets their limit). Rejected after gate closure.
+ */
+export function submitDayAheadBids(state: GameState, bids: DayAheadBid[]): GameState {
+  const { isAuctionOpen, gateClosureTime } = state.dayAhead;
+  if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
+  const all = sanitizeBids([...state.dayAhead.bids, ...bids], state.battery.config.powerRatingMw);
+  return { ...state, dayAhead: { ...state.dayAhead, bids: all } };
+}
 
-  return {
-    ...state,
-    dayAhead: {
-      ...state.dayAhead,
-      playerSchedule: [...state.dayAhead.playerSchedule, position],
-    },
-  };
+/** Withdraw submitted DA orders (all, or those of one hour) before gate closure. */
+export function withdrawDayAheadBids(state: GameState, hour?: number): GameState {
+  const { isAuctionOpen, gateClosureTime } = state.dayAhead;
+  if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
+  const bids = hour === undefined ? [] : state.dayAhead.bids.filter(b => b.hour !== hour);
+  return { ...state, dayAhead: { ...state.dayAhead, bids } };
+}
+
+export function placeIntradayOrderAction(state: GameState, input: PlaceOrderInput): GameState {
+  return placeIdOrder(state, input);
+}
+
+export function cancelIntradayOrderAction(state: GameState, orderId: string): GameState {
+  return cancelIdOrder(state, orderId);
+}
+
+// Simple intraday helpers (used by the training lessons): market order on today's SP.
+export function intradayChargeAction(state: GameState, sp: number, mw: number): GameState {
+  return placeIdOrder(state, { deliveryDay: getUtcDayStart(state.clock.currentTime), period: sp, side: OrderSide.BUY, type: 'market', qtyMw: mw });
+}
+
+export function intradayDischargeAction(state: GameState, sp: number, mw: number): GameState {
+  return placeIdOrder(state, { deliveryDay: getUtcDayStart(state.clock.currentTime), period: sp, side: OrderSide.SELL, type: 'market', qtyMw: mw });
 }
 
 function seededAcceptance(seed: number): number {
@@ -507,57 +436,15 @@ export function submitBmOfferAction(
   };
 }
 
-// Load a historical scenario
+// Load a scenario: the scenario day is TODAY; tomorrow (the open auction's day)
+// is a synthetic day shaped like it. Real Elexon days get the real next day
+// patched in by the data hook when available.
 export function loadScenario(state: GameState, scenario: { daPrices: number[]; sipPrices: number[]; niv: number[]; date: string; realData?: boolean }): GameState {
-  const startDate = new Date(scenario.date + 'T00:00:00Z');
-  const clock = createClock(startDate);
-  const isWeekday = startDate.getUTCDay() > 0 && startDate.getUTCDay() < 6;
+  const day = Date.parse(scenario.date + 'T00:00:00Z');
+  const today = scenarioMarketDay(day, scenario);
   const seed = scenario.daPrices.reduce((a, p) => a + Math.abs(Math.round(p)), 0);
-  const drivers = deriveForecastsFromNiv(scenario.niv, seed, isWeekday);
-  const firstSip = scenario.sipPrices[0] ?? 0;
-  const initialPrice = firstSip !== 0 ? {
-    timestamp: clock.currentTime,
-    price: firstSip,
-    demandMw: 30000,
-    renewablePct: 0.25,
-    basePrice: scenario.daPrices[0] ?? firstSip,
-    eventImpact: 0,
-  } : null;
-
-  return {
-    ...state,
-    clock: { ...clock, speed: 'slow' },
-    priceHistory: initialPrice ? [initialPrice] : [],
-    currentPrice: initialPrice,
-    battery: createBattery(state.battery.config),
-    trades: [],
-    events: [],
-    bm: createBmState(),
-    analysis: null,
-    triadAlert: false,
-    dayAhead: {
-      ...state.dayAhead,
-      bids: [],
-      results: [],
-      gateClosureTime: getGateClosureTime(clock.currentTime),
-      isAuctionOpen: true,
-      deliveryDay: getNextDeliveryDay(clock.currentTime),
-      nextDeliveryDay: getNextDeliveryDay(clock.currentTime),
-      forecastPrices: scenario.daPrices,
-      // Real Elexon days settle at the actual SIP; illustrative scenarios use the
-      // simplified NIV model so their curated NIV story drives the outcome.
-      sipOutturn: scenario.realData ? scenario.sipPrices : generateSIPOutturn(scenario.daPrices, scenario.niv),
-      niv: scenario.niv,
-      demandForecast: drivers.demandForecast,
-      windForecast: drivers.windForecast,
-      solarForecast: drivers.solarForecast,
-      demandOutturn: drivers.demandOutturn,
-      windOutturn: drivers.windOutturn,
-      solarOutturn: drivers.solarOutturn,
-      revealedPeriods: 0,
-      playerSchedule: [],
-    },
-  };
+  const next = templatedMarketDay(day + DAY_MS, scenario.daPrices, seed + 1);
+  return loadMarketDays(state, today, next);
 }
 
 export function reconfigureBattery(state: GameState, config: Partial<BatteryConfig>): GameState {

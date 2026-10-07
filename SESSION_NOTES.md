@@ -388,3 +388,43 @@ fixes without engine rework) is implemented on branch `fix/market-realism-block1
    `OrderEntry.tsx`, order funcs in `market.ts` are currently dead code.
 5. Europe/London time model + 46/50-SP days; "optimal" benchmark ignores SoC
    sequencing; BM assessment uses actual future NIV; ID price clamp −100/+300.
+
+## S4.3 Blocks 2-4 implemented (branch `feat/market-engine-blocks-2-4`)
+Architecture: `state.dayAhead.*` = TODAY's market (unchanged for the ~25 consumers);
+new `state.nextDay: MarketDay` = the open auction's delivery day (only the DA tab and
+D+1 intraday products see it). At midnight nextDay becomes today.
+- **Block 2 — settlement** (`engine/settlement.ts`, ledger `state.ledger`): per SP the
+  NET contract (DA+ID+BM) is dispatched once at SP start (power/SoC-limited), contract
+  cash at trade prices; deliberate deviations (Imbalance tab) add to metered; imbalance
+  (metered − contracted) × 0.5 h settles at SIP when the SP ends (also books a SPOT
+  trade). Undeliverable contracts → imbalance. `battery.dispatchBattery` (physical) +
+  `bookCash` (money) replace charge/discharge-with-price in the engine. Analysis now
+  uses one net position per SP (`analysisPositions`). PositionBook reads the ledger.
+- **Today/tomorrow split** (`engine/marketDay.ts`): `MarketDay` with `daForecast`
+  (desk forecast, AR(1) error σ≈8% + 4% fat-tail misses) and hidden `daClearing`.
+  Live = TWO real days: today = latest complete day − 1, auction day = latest complete
+  day. Later auction days: synthetic placeholder (shaped like today) replaced by real
+  Elexon data if complete (hook effect on `nextDay.day`).
+- **Block 3 — DA auction** (`engine/dayAheadAuction.ts`): HOURLY products (24), per hour
+  buy (max £) and/or sell (min £) = 2-step curve; clears at gate vs hidden actual,
+  pay-as-cleared, unfilled orders don't deliver; ≤ power per side/hour; withdraw/replace
+  before gate. UI rewritten (forecast vs clearing chart, results, energy-feasibility KPI,
+  arbitrage presets tight/safe sized to projected start SoC).
+- **Block 4 — intraday book** (`engine/intradayBook.ts`): product per SP (today + D+1
+  after DA clearing); mid = AR(1) around anchor DA + w(h)·0.5·(SIP−DA) (info arrives
+  toward delivery); 5-level ladder, spread widens/depth thins near gate & overnight;
+  market/limit/IOC/FOK, walk-the-book VWAP, resting limits fill on cross (at limit) or
+  passively (probability by distance to touch), cancel, expire at T-60, per-tick taken
+  depth, net ±P room incl. working orders. UI rewritten (ladder, ticket, products table,
+  working orders, fills, history). Dead `market.ts`, `portfolio.ts`, `OrderBook.tsx`,
+  `OrderEntry.tsx` deleted.
+- Old autosaves (pre-split) are discarded on load. 40 tests green.
+
+## S4.4 Open after Blocks 2-4
+- Wind "error" on real days is dominated by a multi-GW negative bias (B1440 forecast vs
+  B1620 outturn; WINDFOR vs FUELINST also −3…−4 GW on windy days → curtailment). Signal
+  card should de-bias or use WINDFOR/FUELINST.
+- Europe/London time model + 46/50-SP days; "optimal" benchmark ignores SoC sequencing;
+  BM assessment uses actual NIV; EPEX 15:30 half-hourly auction not modelled.
+- Imbalance view's expected SIP still uses the simplified model on real days (by design
+  → realistic slippage), but could use a better estimator.

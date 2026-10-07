@@ -3,202 +3,120 @@ import type { GameState, DayAheadBid, SpeedPreset, BmDirection } from '../engine
 import { GameMode, SPEED_MS } from '../engine/types';
 import {
   createGameState, tickGameState, stepForwardAction,
-  chargeBatteryAction, dischargeBatteryAction, submitDayAheadBids,
+  chargeBatteryAction, dischargeBatteryAction, submitDayAheadBids, withdrawDayAheadBids,
   reconfigureBattery, intradayChargeAction, intradayDischargeAction, loadScenario,
-  submitBmOfferAction,
+  submitBmOfferAction, loadMarketDays, replaceNextDay,
+  placeIntradayOrderAction, cancelIntradayOrderAction,
 } from '../engine/gameState';
+import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { BatteryConfig } from '../engine/battery';
 import type { HistoricalDay } from '../data/historicalDays';
 import { fetchLatestDay, fetchDayData } from '../engine/elexonApi';
-import type { ElexonDayData } from '../engine/elexonApi';
-import { getGateClosureTime, getNextDeliveryDay, getUtcDayStart } from '../engine/clock';
-import { autoSave, loadAutoSave, clearAutoSave, needsRefresh, cacheElexonDay } from '../engine/persistence';
+import { realMarketDay, templatedMarketDay, utcDateString } from '../engine/marketDay';
+import { autoSave, loadAutoSave, clearAutoSave, cacheElexonDay } from '../engine/persistence';
 
 export type DataSource = 'loading' | 'live' | 'synthetic';
 
-const DATA_SOURCE_KEY = 'bess-data-source';
+const DAY_MS = 86_400_000;
+const REAL_MODE_KEY = 'bess-real-mode';
 
-function loadStoredDataSource(): DataSource | null {
-  try {
-    const v = localStorage.getItem(DATA_SOURCE_KEY);
-    return v === 'live' || v === 'synthetic' ? v : null;
-  } catch { return null; }
+function loadRealMode(): boolean {
+  try { return localStorage.getItem(REAL_MODE_KEY) === '1'; } catch { return false; }
+}
+function storeRealMode(on: boolean) {
+  try { localStorage.setItem(REAL_MODE_KEY, on ? '1' : '0'); } catch { /* ignore */ }
 }
 
-/** Market-data arrays of a real Elexon day. SIP is the actual settled SIP. */
-function realDayPatch(dayData: ElexonDayData) {
-  return {
-    forecastPrices: dayData.daPrices,
-    sipOutturn: dayData.sipPrices,
-    niv: dayData.niv,
-    demandForecast: dayData.demandForecast,
-    windForecast: dayData.windForecast,
-    solarForecast: dayData.solarForecast,
-    demandOutturn: dayData.demandOutturn,
-    windOutturn: dayData.windOutturn,
-    solarOutturn: dayData.solarOutturn,
-  };
+/** Saves from before the today/tomorrow split can't be migrated meaningfully. */
+function isCurrentSave(saved: GameState | null): saved is GameState {
+  return Boolean(saved && saved.nextDay && saved.intraday && Array.isArray(saved.ledger) && saved.dayAhead?.bids?.every(b => typeof b.hour === 'number'));
+}
+
+/**
+ * Real-data session: TODAY = the day before the latest complete Elexon day, and
+ * TOMORROW (the open DA auction's delivery day) = the latest complete day, so
+ * both the day you trade and the day you bid for are real.
+ */
+async function fetchRealPair() {
+  const latest = await fetchLatestDay();
+  const latestDay = Date.parse(latest.date + 'T00:00:00Z');
+  const prevDate = utcDateString(latestDay - DAY_MS);
+  const prev = await fetchDayData(prevDate).catch(() => null);
+  cacheElexonDay(latest.date, latest);
+  if (prev && prev.isComplete) {
+    cacheElexonDay(prev.date, prev);
+    return { today: realMarketDay(latestDay - DAY_MS, prev), next: realMarketDay(latestDay, latest) };
+  }
+  const today = realMarketDay(latestDay, latest);
+  return { today, next: templatedMarketDay(latestDay + DAY_MS, latest.daPrices, latestDay / DAY_MS) };
 }
 
 export function useGameState() {
   const [state, setState] = useState<GameState>(() => {
-    const saved = loadAutoSave();
-    if (saved) {
-      // Migrate old saves: backfill missing deliveryDay fields and drop stale positions.
-      const currentTime = saved.clock.currentTime;
-      const currentDayStart = getUtcDayStart(currentTime);
-      const migratedDeliveryDay = saved.dayAhead?.deliveryDay ?? getNextDeliveryDay(currentTime);
-      const migratedSchedule = (saved.dayAhead?.playerSchedule ?? [])
-        .filter((p) => p && typeof p.period === 'number')
-        .map((p) => ({
-          ...p,
-          deliveryDay: typeof p.deliveryDay === 'number' ? p.deliveryDay : currentDayStart,
-        }))
-        .filter((p) => !p.delivered && p.deliveryDay >= currentDayStart);
-
+    const saved = loadAutoSave() as GameState | null;
+    if (isCurrentSave(saved)) {
       return {
         ...saved,
         clock: { ...saved.clock, isPaused: true, speed: 'slow' },
         tutorial: { currentStep: 0, isActive: false, completed: true },
         bm: saved.bm ?? { offers: [], accepted: [] },
-        dayAhead: {
-          ...saved.dayAhead,
-          deliveryDay: migratedDeliveryDay,
-          nextDeliveryDay: saved.dayAhead?.nextDeliveryDay ?? migratedDeliveryDay,
-          playerSchedule: migratedSchedule,
-        },
       };
     }
     return createGameState();
   });
-  // dataSource describes the CURRENT sim day: 'live' only if it is backed by real Elexon data.
-  const [dataSource, setDataSource] = useState<DataSource>(
-    () => (loadAutoSave() ? loadStoredDataSource() ?? 'synthetic' : 'loading')
-  );
-  // realMode: the player chose real data, so each new sim day is fetched from Elexon.
-  // (While the initial live day is loading this stays false; applyElexonData sets it.)
-  const realModeRef = useRef(dataSource === 'live');
-  // Date whose real data is already applied — avoids refetching it on mount.
-  const loadedDateRef = useRef('');
+  const [loading, setLoading] = useState(() => !isCurrentSave(loadAutoSave() as GameState | null));
+  // dataSource describes TODAY's market data.
+  const dataSource: DataSource = loading ? 'loading' : state.dayAhead.todaySource === 'real' ? 'live' : 'synthetic';
+  // realMode: the player chose real data, so each new auction day is fetched from Elexon.
+  const realModeRef = useRef(isCurrentSave(loadAutoSave() as GameState | null) && loadRealMode());
   const intervalRef = useRef<number | null>(null);
   const fetchedRef = useRef(false);
   const autosaveRef = useRef(0);
 
-  useEffect(() => {
-    if (dataSource === 'loading') return;
-    try { localStorage.setItem(DATA_SOURCE_KEY, dataSource); } catch { /* ignore */ }
-  }, [dataSource]);
-
-  // Apply Elexon data: reset clock to data date 00:00, reset DA state fully
-  const applyElexonData = (dayData: ElexonDayData) => {
-    realModeRef.current = true;
-    loadedDateRef.current = dayData.date;
-    const dataDate = new Date(dayData.date + 'T00:00:00Z');
-    const t = dataDate.getTime();
-    const firstSip = dayData.sipPrices[0] ?? 0;
-    const initialPrice = {
-      timestamp: t,
-      price: firstSip,
-      demandMw: 30000,
-      renewablePct: 0.25,
-      basePrice: dayData.daPrices[0] ?? firstSip,
-      eventImpact: 0,
-    };
-    setState(prev => ({
-      ...prev,
-      clock: {
-        ...prev.clock,
-        currentTime: t,
-        startTime: t,
-        isPaused: true,
-      },
-      priceHistory: [initialPrice],
-      currentPrice: initialPrice,
-      dayAhead: {
-        bids: [],
-        results: [],
-        gateClosureTime: getGateClosureTime(t),
-        isAuctionOpen: true,
-        deliveryDay: getNextDeliveryDay(t),
-        nextDeliveryDay: getNextDeliveryDay(t),
-        ...realDayPatch(dayData),
-        revealedPeriods: 0,
-        playerSchedule: [],
-      },
-      bm: { offers: [], accepted: [] },
-      trades: [],
-      analysis: null,
-      battery: {
-        ...prev.battery,
-        cycleLog: [],
-        totalChargedMwh: 0,
-        totalDischargedMwh: 0,
-        totalChargeCost: 0,
-        totalDischargeRevenue: 0,
-        totalCycles: 0,
-        currentSocMwh: prev.battery.config.capacityMwh * 0.5,
-        socPct: 50,
-      },
-    }));
+  const setRealMode = (on: boolean) => {
+    realModeRef.current = on;
+    storeRealMode(on);
   };
 
-  // On mount: fetch real Elexon data (or refresh if stale)
+  const startLive = useCallback(() => {
+    setLoading(true);
+    fetchRealPair()
+      .then(({ today, next }) => {
+        setRealMode(true);
+        setState(prev => loadMarketDays(prev, today, next));
+        console.log(`Loaded real Elexon data: today ${today.date}, auction day ${next.date ?? '(simulated)'}`);
+      })
+      .catch(err => {
+        console.warn('Elexon API unavailable, using synthetic data:', err.message);
+        setRealMode(false);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  // On mount: start a real-data session unless a current autosave exists.
   useEffect(() => {
     if (fetchedRef.current) return;
     fetchedRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-off initial data load
+    if (!isCurrentSave(loadAutoSave() as GameState | null)) startLive();
+  }, [startLive]);
 
-    const shouldFetch = needsRefresh() || !loadAutoSave();
-
-    if (shouldFetch) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setDataSource('loading');
-      fetchLatestDay()
-        .then(dayData => {
-          cacheElexonDay(dayData.date, dayData);
-          applyElexonData(dayData);
-          setDataSource('live');
-          console.log(`Loaded real Elexon data for ${dayData.date}`);
-        })
-        .catch(err => {
-          console.warn('Elexon API unavailable, using synthetic data:', err.message);
-          realModeRef.current = false;
-          setDataSource('synthetic');
-        });
-    }
-  }, []);
-
-  // In real-data mode, replace each new sim day with that day's real Elexon data
-  // (all series together, so forecasts, outturns, NIV and SIP stay consistent).
-  // If the day isn't complete yet (e.g. rolling into today), the synthetic day
-  // stays and the source is reported as synthetic. Curated scenarios never fetch.
-  const simDateRef = useRef('');
+  // Real-data mode: when a new auction day appears (after midnight), try to
+  // replace its synthetic placeholder with real Elexon data while the auction
+  // is still open. If the day isn't published completely, it stays simulated.
+  const nextDayKey = state.nextDay.day;
+  const nextIsSynthetic = state.nextDay.source === 'synthetic';
   useEffect(() => {
-    const d = new Date(state.clock.currentTime);
-    const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-    if (dateStr === simDateRef.current) return;
-    simDateRef.current = dateStr;
-    if (!realModeRef.current || dateStr === loadedDateRef.current) return;
-    loadedDateRef.current = dateStr;
-
-    fetchDayData(dateStr)
-      .then(dayData => {
-        // Ignore stale results (player switched day/scenario meanwhile).
-        if (!realModeRef.current || loadedDateRef.current !== dateStr) return;
-        if (!dayData.isComplete) {
-          setDataSource('synthetic');
-          return;
-        }
-        cacheElexonDay(dayData.date, dayData);
-        setState(prev => ({
-          ...prev,
-          dayAhead: { ...prev.dayAhead, ...realDayPatch(dayData) },
-        }));
-        setDataSource('live');
+    if (!realModeRef.current || !nextIsSynthetic) return;
+    const day = nextDayKey;
+    fetchDayData(utcDateString(day))
+      .then(data => {
+        if (!data.isComplete || !realModeRef.current) return;
+        cacheElexonDay(data.date, data);
+        setState(prev => replaceNextDay(prev, realMarketDay(day, data)));
       })
-      .catch(() => {
-        if (realModeRef.current && loadedDateRef.current === dateStr) setDataSource('synthetic');
-      });
-  }, [state.clock.currentTime]);
+      .catch(() => { /* stays simulated */ });
+  }, [nextDayKey, nextIsSynthetic]);
 
   // Autosave every 10 ticks
   useEffect(() => {
@@ -256,6 +174,18 @@ export function useGameState() {
     setState(prev => submitDayAheadBids(prev, bids));
   }, []);
 
+  const withdrawDayAheadBid = useCallback((hour?: number) => {
+    setState(prev => withdrawDayAheadBids(prev, hour));
+  }, []);
+
+  const placeIntradayOrder = useCallback((input: PlaceOrderInput) => {
+    setState(prev => placeIntradayOrderAction(prev, input));
+  }, []);
+
+  const cancelIntradayOrder = useCallback((orderId: string) => {
+    setState(prev => cancelIntradayOrderAction(prev, orderId));
+  }, []);
+
   const advanceTutorial = useCallback(() => {
     setState(prev => ({
       ...prev,
@@ -293,42 +223,31 @@ export function useGameState() {
 
   const playScenario = useCallback((day: HistoricalDay) => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    // Real Elexon days: load real forecasts/outturns for that date too (and for
-    // following days). Illustrative scenarios stay fully synthetic.
-    realModeRef.current = Boolean(day.realData);
-    loadedDateRef.current = '';
-    simDateRef.current = '';
+    // Real Elexon days keep fetching real auction days; illustrative ones stay synthetic.
+    setRealMode(Boolean(day.realData));
     setState(prev => loadScenario(prev, day));
-    setDataSource(day.realData ? 'live' : 'synthetic');
+    setLoading(false);
   }, []);
 
-  // Explicitly (re)load the latest real Elexon day — used when the player picks
+  // Explicitly (re)load the latest real Elexon days — used when the player picks
   // "Live" in the launcher, so a stale autosave / previous scenario can't linger.
   const loadLive = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    setDataSource('loading');
-    fetchLatestDay()
-      .then(dayData => {
-        cacheElexonDay(dayData.date, dayData);
-        applyElexonData(dayData);
-        setDataSource('live');
-        console.log(`Loaded real Elexon data for ${dayData.date}`);
-      })
-      .catch(err => {
-        console.warn('Elexon API unavailable, using synthetic data:', err.message);
-        realModeRef.current = false;
-        setDataSource('synthetic');
-      });
-  }, []);
+    startLive();
+  }, [startLive]);
 
   const configureBattery = useCallback((config: Partial<BatteryConfig>) => {
     setState(prev => reconfigureBattery(prev, config));
   }, []);
 
   const loadSavedState = useCallback((saved: GameState) => {
+    if (!isCurrentSave(saved)) {
+      console.warn('Save is from an older version of the simulator and cannot be loaded.');
+      return;
+    }
     if (intervalRef.current) clearInterval(intervalRef.current);
     // A saved game keeps its own market data; don't overwrite it with fetches.
-    realModeRef.current = false;
+    setRealMode(false);
     setState({ ...saved, bm: saved.bm ?? { offers: [], accepted: [] } });
   }, []);
 
@@ -336,25 +255,14 @@ export function useGameState() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     clearAutoSave();
     fetchedRef.current = false;
-    const fresh = createGameState();
-    setState(fresh);
-    setDataSource('loading');
-
-    fetchLatestDay()
-      .then(dayData => {
-        cacheElexonDay(dayData.date, dayData);
-        applyElexonData(dayData);
-        setDataSource('live');
-      })
-      .catch(() => {
-        realModeRef.current = false;
-        setDataSource('synthetic');
-      });
-  }, []);
+    setState(createGameState());
+    startLive();
+  }, [startLive]);
 
   return {
     state, dataSource, togglePause, setSpeed, stepForward,
-    chargeBattery, dischargeBattery, placeDayAheadBids,
+    chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid,
+    placeIntradayOrder, cancelIntradayOrder,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, configureBattery,
     loadSavedState, reset,

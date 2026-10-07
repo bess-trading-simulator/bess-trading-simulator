@@ -37,6 +37,7 @@ import Tutorial, { type TutorialStep } from './Tutorial';
 import AboutProject from './AboutProject';
 import TradeExplainer from './TradeExplainer';
 import type { HistoricalDay } from '../data/historicalDays';
+import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { TrainingLevel } from '../data/curriculum';
 import { scoreMission } from '../engine/missionScoring';
 import { assessLesson } from '../engine/lessonAssessment';
@@ -301,6 +302,8 @@ interface Props {
   onConfigureBattery: (config: Partial<BatteryConfig>) => void;
   onIntradayCharge: (sp: number, mw: number) => void;
   onIntradayDischarge: (sp: number, mw: number) => void;
+  onPlaceIntradayOrder: (input: PlaceOrderInput) => void;
+  onCancelIntradayOrder: (orderId: string) => void;
   onSubmitBmOffer: (period: number, direction: BmDirection, mw: number, price: number) => void;
   onSetMode: (mode: GameMode) => void;
   onPlayScenario: (day: HistoricalDay) => void;
@@ -483,7 +486,6 @@ function LessonMain({ props, lessonId, focus, assessmentMode, level }: {
   level: TrainingLevel;
 }) {
   const { state } = props;
-  const currentHour = new Date(state.clock.currentTime).getUTCHours();
   const signalDetail = level === 'quant' || (level === 'trader' && lessonId >= 3) || lessonId >= 4 || focus === 'stack' || focus === 'strategy' ? 'advanced' : 'simple';
   const Signal = assessmentMode ? null : <MarketSignalPanel state={state} detail={signalDetail} />;
 
@@ -525,6 +527,7 @@ function LessonMain({ props, lessonId, focus, assessmentMode, level }: {
         <div className="mission-focus-target">
           <DayAheadAuction
             dayAhead={state.dayAhead}
+            nextDay={state.nextDay}
             currentTime={state.clock.currentTime}
             battery={state.battery}
             onSubmitBids={props.onSubmitBids}
@@ -540,13 +543,9 @@ function LessonMain({ props, lessonId, focus, assessmentMode, level }: {
         {Signal}
         <div className="mission-focus-target">
           <IntradayTrading
-            dayAhead={state.dayAhead}
-            battery={state.battery}
-            currentPrice={state.currentPrice?.price ?? 0}
-            currentTime={state.clock.currentTime}
-            currentHour={currentHour}
-            onIntradayCharge={props.onIntradayCharge}
-            onIntradayDischarge={props.onIntradayDischarge}
+            state={state}
+            onPlaceOrder={props.onPlaceIntradayOrder}
+            onCancelOrder={props.onCancelIntradayOrder}
           />
         </div>
       </>
