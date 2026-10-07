@@ -1,6 +1,6 @@
 import type { GameState, DayAheadBid, Trade, DayAheadState, BmDirection, BmOffer, BmState } from './types';
 import { OrderSide, MarketType, GameMode } from './types';
-import { createClock, tick, getGateClosureTime, getNextDeliveryDay, getSettlementPeriod, getUtcDayStart } from './clock';
+import { createClock, tick, getGateClosureTime, getNextDeliveryDay, getSettlementPeriod, getUtcDayStart, isIntradayGateOpen } from './clock';
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery, chargeBattery, dischargeBattery } from './battery';
@@ -305,6 +305,9 @@ export function dischargeBatteryAction(state: GameState, mw: number): GameState 
 }
 
 export function submitDayAheadBids(state: GameState, bids: DayAheadBid[]): GameState {
+  // Bids are only accepted before gate closure (09:20 UK) of the open auction.
+  const { isAuctionOpen, gateClosureTime } = state.dayAhead;
+  if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
   const deliveryDay = state.dayAhead.deliveryDay;
   const schedule: TradePosition[] = bids.map(b => ({
     period: b.period,
@@ -336,9 +339,32 @@ function getIntradayExecutionPrice(state: GameState, sp: number): number {
   });
 }
 
+/** Net contracted MW in an SP of a day (+ = discharge/sell, − = charge/buy). */
+function netContractedMw(state: GameState, deliveryDay: number, sp: number): number {
+  return state.dayAhead.playerSchedule
+    .filter(p => p.deliveryDay === deliveryDay && p.period === sp)
+    .reduce((acc, p) => acc + (p.action === 'discharge' ? p.mw : -p.mw), 0);
+}
+
+/**
+ * Validate an intraday trade: the SP must still be before ID gate closure
+ * (T-60), and the resulting net position may not exceed the power rating.
+ * Returns the tradable MW (possibly reduced), or 0 if the trade is rejected.
+ */
+function allowedIntradayMw(state: GameState, sp: number, mw: number, action: 'charge' | 'discharge'): number {
+  if (sp < 0 || sp > 47 || mw <= 0) return 0;
+  if (!isIntradayGateOpen(state.clock.currentTime, sp)) return 0;
+  const p = state.battery.config.powerRatingMw;
+  const net = netContractedMw(state, getUtcDayStart(state.clock.currentTime), sp);
+  const room = action === 'discharge' ? p - net : p + net;
+  return Math.max(0, Math.min(mw, room));
+}
+
 // Intraday trading: schedule charge/discharge at a specific SP's intraday price.
 // Intraday trades the current delivery day (the day the player is currently in).
-export function intradayChargeAction(state: GameState, sp: number, mw: number): GameState {
+export function intradayChargeAction(state: GameState, sp: number, requestedMw: number): GameState {
+  const mw = allowedIntradayMw(state, sp, requestedMw, 'charge');
+  if (mw <= 0) return state;
   const price = getIntradayExecutionPrice(state, sp);
   const position: TradePosition = {
     period: sp,
@@ -359,7 +385,9 @@ export function intradayChargeAction(state: GameState, sp: number, mw: number): 
   };
 }
 
-export function intradayDischargeAction(state: GameState, sp: number, mw: number): GameState {
+export function intradayDischargeAction(state: GameState, sp: number, requestedMw: number): GameState {
+  const mw = allowedIntradayMw(state, sp, requestedMw, 'discharge');
+  if (mw <= 0) return state;
   const price = getIntradayExecutionPrice(state, sp);
   const position: TradePosition = {
     period: sp,
@@ -391,8 +419,9 @@ function assessBmOffer(state: GameState, direction: BmDirection, period: number,
   const reference = (forecast + sip) / 2;
   const premium = price - reference;
   const niv = state.dayAhead.niv[period] ?? 0;
-  const systemNeedsDischarge = niv < -100;
-  const systemNeedsCharge = niv > 100;
+  // Elexon sign: + = system short (needs generation), − = long (needs demand)
+  const systemNeedsDischarge = niv > 100;
+  const systemNeedsCharge = niv < -100;
   const tightnessBoost = direction === 'offer' && systemNeedsDischarge ? 0.25 : direction === 'bid' && systemNeedsCharge ? 0.25 : 0;
 
   if (direction === 'offer') {
@@ -479,7 +508,7 @@ export function submitBmOfferAction(
 }
 
 // Load a historical scenario
-export function loadScenario(state: GameState, scenario: { daPrices: number[]; sipPrices: number[]; niv: number[]; date: string }): GameState {
+export function loadScenario(state: GameState, scenario: { daPrices: number[]; sipPrices: number[]; niv: number[]; date: string; realData?: boolean }): GameState {
   const startDate = new Date(scenario.date + 'T00:00:00Z');
   const clock = createClock(startDate);
   const isWeekday = startDate.getUTCDay() > 0 && startDate.getUTCDay() < 6;
@@ -515,7 +544,9 @@ export function loadScenario(state: GameState, scenario: { daPrices: number[]; s
       deliveryDay: getNextDeliveryDay(clock.currentTime),
       nextDeliveryDay: getNextDeliveryDay(clock.currentTime),
       forecastPrices: scenario.daPrices,
-      sipOutturn: generateSIPOutturn(scenario.daPrices, scenario.niv),
+      // Real Elexon days settle at the actual SIP; illustrative scenarios use the
+      // simplified NIV model so their curated NIV story drives the outcome.
+      sipOutturn: scenario.realData ? scenario.sipPrices : generateSIPOutturn(scenario.daPrices, scenario.niv),
       niv: scenario.niv,
       demandForecast: drivers.demandForecast,
       windForecast: drivers.windForecast,

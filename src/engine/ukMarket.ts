@@ -90,18 +90,20 @@ export function generateGBDayAhead(seed: number, isWeekday: boolean, windPct: nu
 }
 
 /**
- * Educational imbalance settlement price.
- * Derived from NIV so the visible signal matches the trade outcome:
- *  - Linear coupling at 0.15 £/MWh per MW of NIV (inverse)
- *  - Beyond ±500 MW a stress term kicks in (system runs out of cheap balancing
- *    actions): long → SIP crashes harder negative, short → scarcity spike.
- * Decoupled from raw Elexon SIP, so charging into a long system pays you and
- * discharging into a long system costs you, regardless of what real SIP did.
+ * SIMPLIFIED imbalance price model — used only for synthetic days/scenarios and
+ * for the player's *expected* SIP from a NIV forecast. Real days settle at
+ * Elexon's actual SIP, which is set by the marginal accepted BM bids/offers
+ * (not a formula of NIV) and can be far more extreme.
+ *
+ * Elexon sign convention: NIV > 0 = system SHORT, NIV < 0 = system LONG.
+ *  - Linear coupling at 0.15 £/MWh per MWh of NIV
+ *  - Beyond ±500 MWh a stress term kicks in (system runs out of cheap balancing
+ *    actions): short → scarcity spike, long → SIP crashes harder negative.
  */
 export function imbalanceSettlementPrice(daPrice: number, niv: number): number {
-  const linear = -niv * 0.15;
+  const linear = niv * 0.15;
   const stressMw = Math.max(0, Math.abs(niv) - 500);
-  const stress = stressMw * 0.18 * (niv > 0 ? -1 : 1);
+  const stress = stressMw * 0.18 * (niv > 0 ? 1 : -1);
   return Math.round((daPrice + linear + stress) * 100) / 100;
 }
 
@@ -126,10 +128,10 @@ function solarProfile(sp: number, peak: number): number {
  * together produce NIV — so a trader builds skill by *combining* partial reads
  * (and judging conviction by how well they agree) rather than reading one
  * number:
- *   - wind error (outturn − forecast): surplus → system long  (+NIV)
- *   - demand error (outturn − forecast): above forecast → system short (−NIV)
+ *   - wind error (outturn − forecast): surplus → system long  (−NIV)
+ *   - demand error (outturn − forecast): above forecast → system short (+NIV)
  *   - residual noise: unobservable → the forecast uncertainty / slippage
- * NIV = wind_surplus·0.6 − demand_excess·0.7 + residual.
+ * NIV = demand_excess·0.7 − wind_surplus·0.6 + residual  (Elexon sign: + = short).
  * Wind error is an autocorrelated random walk (skill = read the trend);
  * demand error has a time-of-day bias (evening peaks tend to run short).
  */
@@ -170,7 +172,7 @@ export function generateImbalanceDay(seed: number, isWeekday: boolean): Imbalanc
     const sErr = sFc > 0 ? Math.round((rng() - 0.5) * 0.25 * solarPeak) : 0;
 
     const residual = (rng() - 0.5) * 150;
-    const nivVal = Math.round(wErr * 0.6 - dErr * 0.7 + residual);
+    const nivVal = Math.round(dErr * 0.7 - wErr * 0.6 + residual);
 
     windForecast.push(Math.max(0, wFc));
     windOutturn.push(Math.max(0, wFc + wErr));
@@ -214,12 +216,12 @@ export function deriveForecastsFromNiv(
       + (hour >= 16 && hour <= 20 ? 6000 : 0)
       - (hour >= 1 && hour <= 5 ? 6000 : 0);
     const dFc = Math.round(demandShape * (isWeekday ? 1 : 0.92));
-    // demand above forecast ⇒ short ⇒ −NIV, so explain +NIV with demand below forecast
-    const dErr = Math.round(-n * 0.35 + (rng() - 0.5) * 180);
+    // demand above forecast ⇒ short ⇒ +NIV
+    const dErr = Math.round(n * 0.35 + (rng() - 0.5) * 180);
 
     const wFc = Math.round(windBase + 2000 * Math.sin(sp / 6));
-    // wind surplus ⇒ long ⇒ +NIV
-    const wErr = Math.round(n * 0.55 + (rng() - 0.5) * 180);
+    // wind surplus ⇒ long ⇒ −NIV
+    const wErr = Math.round(-n * 0.55 + (rng() - 0.5) * 180);
 
     const sFc = Math.round(solarProfile(sp, solarPeak));
     const sErr = sFc > 0 ? Math.round((rng() - 0.5) * 0.25 * solarPeak) : 0;
@@ -235,13 +237,10 @@ export function deriveForecastsFromNiv(
 }
 
 /**
- * The single canonical SIP outturn curve: the NIV-derived settlement price per
- * SP, identical to what a trade settles at. Used by spot/imbalance settlement,
- * the intraday SIP line, and post-trade analysis — one source of truth so the
- * price you settle at always matches the price you're graded against.
- *
- * (Even with live Elexon data we derive SIP from the real NIV rather than using
- * Elexon's raw SIP, so the NIV signal the player reads always drives outcomes.)
+ * Synthetic SIP outturn curve from the simplified model, for synthetic days and
+ * curated scenarios. Real Elexon days use the actual SIP instead. Whichever
+ * curve is stored in `dayAhead.sipOutturn` is the single source of truth for
+ * settlement, the intraday SIP line and post-trade analysis.
  */
 export function generateSIPOutturn(daPrices: number[], niv: number[]): number[] {
   return daPrices.map((da, sp) => imbalanceSettlementPrice(da, niv[sp] ?? 0));
@@ -340,8 +339,8 @@ export function generateFullAnalysis(
           if (playerPrice >= sip * 0.9) {
             verdict = 'good';
             explanation = `Correct call — you discharged at £${playerPrice.toFixed(2)} (${playerMarket}) during an expensive period. SIP was £${sip.toFixed(2)} (${daSipDirection} than DA forecast of £${da.toFixed(2)}). `;
-            if (nivVal < -100) explanation += `The system was short by ${Math.abs(nivVal)} MWh, driving prices up.`;
-            else if (nivVal > 100) explanation += `Despite the system being long, prices held up well.`;
+            if (nivVal > 100) explanation += `The system was short by ${nivVal} MWh, driving prices up.`;
+            else if (nivVal < -100) explanation += `Despite the system being long, prices held up well.`;
           } else {
             verdict = 'ok';
             explanation = `Right idea (discharge during peak) but your price £${playerPrice.toFixed(2)} was below the SIP of £${sip.toFixed(2)}. `;
@@ -356,7 +355,7 @@ export function generateFullAnalysis(
           verdict = 'bad';
           explanation = `You discharged but this was actually one of the cheapest periods (SIP £${sip.toFixed(2)}). `;
           explanation += `The DA forecast of £${da.toFixed(2)} was misleading — the outturn was ${Math.abs(daSipDiff).toFixed(2)} ${daSipDirection}. `;
-          if (nivVal > 100) explanation += `The system was oversupplied (NIV: +${nivVal} MWh), which pushed SIP down. Charging here would have been optimal.`;
+          if (nivVal < -100) explanation += `The system was oversupplied (NIV: ${nivVal} MWh, long), which pushed SIP down. Charging here would have been optimal.`;
           else explanation += `Better strategy: charge during relatively cheap periods and save discharge capacity for stronger price moves.`;
         } else {
           verdict = 'ok';
@@ -369,7 +368,7 @@ export function generateFullAnalysis(
             verdict = 'good';
             explanation = `Smart charging — you bought at £${playerPrice.toFixed(2)} (${playerMarket}) during one of the cheapest periods. SIP was £${sip.toFixed(2)}. `;
             if (sip < 0) explanation += `Negative price — you were paid to charge! `;
-            if (nivVal > 100) explanation += `System was long (NIV: +${nivVal} MWh), keeping prices low.`;
+            if (nivVal < -100) explanation += `System was long (NIV: ${nivVal} MWh), keeping prices low.`;
           } else {
             verdict = 'ok';
             explanation = `You charged at £${playerPrice.toFixed(2)} but could have got it cheaper — SIP was only £${sip.toFixed(2)}. `;
@@ -396,7 +395,7 @@ export function generateFullAnalysis(
         verdict = 'missed';
         explanation = `Missed opportunity — SIP was £${sip.toFixed(2)}, one of the most expensive periods. `;
         explanation += `Discharging ${powerRatingMw} MW would have earned £${(sip * powerRatingMw * 0.5).toFixed(2)} this half-hour. `;
-        if (nivVal < -200) explanation += `System was significantly short (NIV: ${nivVal} MWh), which drove prices up. `;
+        if (nivVal > 200) explanation += `System was significantly short (NIV: +${nivVal} MWh), which drove prices up. `;
         explanation += `DA forecast was £${da.toFixed(2)} — the outturn was ${Math.abs(sip - da).toFixed(2)} ${sip > da ? 'higher' : 'lower'}.`;
       } else {
         verdict = 'neutral';

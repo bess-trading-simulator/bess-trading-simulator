@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getSettlementPeriod, getUtcDayStart, getNextDeliveryDay } from './clock';
+import { getSettlementPeriod, getUtcDayStart, getNextDeliveryDay, isIntradayGateOpen, firstIntradayTradableSp } from './clock';
 
 const DAY = 86400000;
 
@@ -35,5 +35,25 @@ describe('getNextDeliveryDay', () => {
     const before = getNextDeliveryDay(Date.UTC(2026, 4, 20, 3, 0));  // pre-gate (early morning)
     const after = getNextDeliveryDay(Date.UTC(2026, 4, 20, 14, 0));  // post-gate (afternoon)
     expect(after - before).toBe(DAY);
+  });
+});
+
+describe('intraday gate closure (T-60)', () => {
+  const day = Date.UTC(2026, 4, 20);
+  const at = (h: number, m: number) => day + (h * 60 + m) * 60000;
+
+  it('closes exactly one hour before the SP starts', () => {
+    // SP index 24 starts 12:00 → gate 11:00
+    expect(isIntradayGateOpen(at(10, 59), 24)).toBe(true);
+    expect(isIntradayGateOpen(at(11, 0), 24)).toBe(false);
+  });
+
+  it('first tradable SP is the first one starting more than 60 min ahead', () => {
+    expect(firstIntradayTradableSp(at(11, 0))).toBe(25);   // 12:30
+    expect(firstIntradayTradableSp(at(11, 10))).toBe(25);
+    expect(firstIntradayTradableSp(at(0, 0))).toBe(3);     // 01:30
+    const first = firstIntradayTradableSp(at(11, 10));
+    expect(isIntradayGateOpen(at(11, 10), first)).toBe(true);
+    expect(isIntradayGateOpen(at(11, 10), first - 1)).toBe(false);
   });
 });

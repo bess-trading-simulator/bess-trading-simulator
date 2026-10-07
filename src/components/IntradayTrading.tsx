@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { DayAheadState } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { getMaxChargeableMw, getMaxDischargeableMw } from '../engine/battery';
-import { getUtcDayStart, formatDeliveryDay } from '../engine/clock';
+import { getUtcDayStart, formatDeliveryDay, firstIntradayTradableSp } from '../engine/clock';
 import HelpIcon from './HelpIcon';
 import {
   ComposedChart, Bar, Line, Scatter, XAxis, YAxis, CartesianGrid,
@@ -33,6 +33,8 @@ export default function IntradayTrading({
   const { forecastPrices, sipOutturn, revealedPeriods, playerSchedule } = dayAhead;
 
   const todayDay = getUtcDayStart(currentTime);
+  // ID gate closure: an SP can only be traded until 1h before it starts (T-60).
+  const firstTradableSp = firstIntradayTradableSp(currentTime);
 
   // Intraday prices are tradable only for live/future periods. Settled periods show SIP instead.
   const idPrices = forecastPrices.map((_, sp) => {
@@ -111,18 +113,19 @@ export default function IntradayTrading({
   const selectedPlan = selectedSp !== null ? planBySp[selectedSp] : undefined;
   const selectedDa = selectedSp !== null ? forecastPrices[selectedSp] : 0;
   const selectedId = selectedSp !== null ? (idPrices[selectedSp] ?? currentPrice) : currentPrice;
+  // ID price minus DA forecast — not a bid–ask spread (no order book yet).
   const spread = selectedId - selectedDa;
   const socEntryAtSelected = selectedSp !== null ? socAtEntry[selectedSp] : null;
   const socExitAtSelected = selectedSp !== null ? socAtExit[selectedSp] : null;
 
   const handleCharge = () => {
-    if (selectedSp === null || vol <= 0) return;
+    if (selectedSp === null || vol <= 0 || selectedSp < firstTradableSp) return;
     onIntradayCharge(selectedSp, Math.min(vol, maxCharge));
     setSelectedSp(null);
   };
 
   const handleDischarge = () => {
-    if (selectedSp === null || vol <= 0) return;
+    if (selectedSp === null || vol <= 0 || selectedSp < firstTradableSp) return;
     onIntradayDischarge(selectedSp, Math.min(vol, maxDischarge));
     setSelectedSp(null);
   };
@@ -451,10 +454,13 @@ export default function IntradayTrading({
 
       {/* SP selector grid */}
       <div className="id-trade-section">
-        <h4>Future settlement periods (next 12)</h4>
+        <h4>
+          Tradable settlement periods (next 12)
+          <HelpIcon text="Intraday gate closure is 1 hour before each SP starts (BM Gate Closure): after that your physical position is frozen, so the next ~2 periods are no longer tradable." />
+        </h4>
         <div className="id-sp-grid">
-          {Array.from({ length: Math.max(0, Math.min(12, 48 - revealedPeriods - 1)) }, (_, idx) => {
-            const sp = revealedPeriods + 1 + idx;
+          {Array.from({ length: Math.max(0, Math.min(12, 48 - firstTradableSp)) }, (_, idx) => {
+            const sp = firstTradableSp + idx;
             const hour = Math.floor(sp / 2);
             const min = sp % 2 === 0 ? '00' : '30';
             const idPrice = idPrices[sp] ?? currentPrice;
@@ -519,8 +525,8 @@ export default function IntradayTrading({
                       className={sp === hoveredSp || sp === selectedSp ? 'row-hovered' : ''}
                       onMouseEnter={() => setHoveredSp(sp)}
                       onMouseLeave={() => setHoveredSp(null)}
-                      onClick={() => sp > revealedPeriods && setSelectedSp(sp === selectedSp ? null : sp)}
-                      style={{ cursor: sp > revealedPeriods ? 'pointer' : 'default' }}
+                      onClick={() => sp >= firstTradableSp && setSelectedSp(sp === selectedSp ? null : sp)}
+                      style={{ cursor: sp >= firstTradableSp ? 'pointer' : 'default' }}
                     >
                       <td>{String(hour).padStart(2, '0')}:{min}</td>
                       <td className={plan.chargeMw > 0 ? 'buy-text' : 'muted'}>

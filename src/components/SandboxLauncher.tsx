@@ -124,7 +124,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
           <span className="launcher-step-num">2</span>
           <div className="launcher-step-title">
             <h2>Choose a day</h2>
-            <p>Start on today's live Elexon data, or load a curated historical scenario. You can switch days any time from the menu.</p>
+            <p>Start on the most recent complete day of real Elexon data, or load an illustrative (fictional) scenario. You can switch days any time from the menu.</p>
           </div>
         </div>
         <div className="launcher-grid scenario-grid">
@@ -137,11 +137,11 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
               <Radio size={20} />
               <div>
                 <h3>Live market</h3>
-                <span className="launcher-card-sub">Today · Elexon BMRS</span>
+                <span className="launcher-card-sub">Latest complete day · Elexon BMRS</span>
               </div>
               {scenarioId === 'live' && <CheckCircle2 size={18} className="launcher-card-check" />}
             </div>
-            <p>Trade the most recent real GB market day, with live day-ahead, NIV, wind, demand and solar forecasts.</p>
+            <p>Replay the most recent complete GB settlement day (usually yesterday): real imbalance prices and NIV, Market Index Price as DA proxy, and wind, demand and solar forecasts.</p>
           </button>
 
           {HISTORICAL_DAYS.map((day) => {
@@ -157,7 +157,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
                   <Calendar size={20} />
                   <div>
                     <h3>{day.title}</h3>
-                    <span className="launcher-card-sub">{day.date}</span>
+                    <span className="launcher-card-sub">Illustrative scenario · fictional data</span>
                   </div>
                   <span
                     className="scenario-difficulty"

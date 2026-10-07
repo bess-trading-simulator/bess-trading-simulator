@@ -56,7 +56,7 @@ export const STRATEGIES: Strategy[] = [
     streamLabel: 'Imbalance',
     tagline: 'Predict system imbalance, profit from SIP',
     description: 'Net Imbalance Volume (NIV) is whether the GB grid was over- or under-supplied in each settlement period. When the system is short (undersupplied), SIP spikes. If you predict this correctly, you can leave positions that settle at favourable SIP prices.',
-    howItWorks: 'After your DA schedule is set, you can adjust in the intraday market. If you think the system will be SHORT (negative NIV) in a period, hold or increase your discharge position — you\'ll be paid the high SIP. If you think it\'ll be LONG (positive NIV), the SIP will be low — good for charging. Key signals: weather forecast errors, demand forecast errors, plant trips, interconnector flows.',
+    howItWorks: 'After your DA schedule is set, you can adjust in the intraday market. If you think the system will be SHORT (positive NIV, Elexon sign) in a period, hold or increase your discharge position — you\'ll be paid the high SIP. If you think it\'ll be LONG (negative NIV), the SIP will be low — good for charging. Key signals: weather forecast errors, demand forecast errors, plant trips, interconnector flows.',
     keyMetrics: 'NIV prediction accuracy, SIP vs DA spread captured, net imbalance profit/loss.',
     tip: 'Watch for: (1) wind forecast drops → system likely short → hold discharge positions, (2) mild weather unexpectedly → demand lower → system likely long → prices drop. Don\'t chase NIV on every period — pick the ones where you have conviction.',
     difficulty: 'Advanced',

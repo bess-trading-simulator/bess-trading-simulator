@@ -19,7 +19,8 @@ function getBmReference(state: GameState, period: number): { price: number; labe
     ? state.dayAhead.sipOutturn[period]
     : null;
   const niv = state.dayAhead.niv[period] ?? 0;
-  const nivAdjustment = Math.max(-18, Math.min(18, -niv / 35));
+  // Elexon sign: short (+NIV) lifts the reference, long (−NIV) lowers it
+  const nivAdjustment = Math.max(-18, Math.min(18, niv / 35));
   const price = sip === null
     ? da + nivAdjustment
     : (da * 0.35) + (sip * 0.65) + (nivAdjustment * 0.5);

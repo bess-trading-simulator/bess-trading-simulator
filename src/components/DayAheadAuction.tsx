@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { DayAheadBid, DayAheadState } from '../engine/types';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
-import { hoursUntilGateClosure, getGateClosureTime, formatHour, formatDeliveryDay, getUtcDayStart } from '../engine/clock';
+import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart } from '../engine/clock';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import HelpIcon from './HelpIcon';
 import { CheckCircle } from 'lucide-react';
@@ -20,7 +20,9 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
   const [submitted, setSubmitted] = useState(false);
   const [hoveredPeriod, setHoveredPeriod] = useState<number | null>(null);
   const gateHours = hoursUntilGateClosure(currentTime);
-  const gateTimeUtc = formatHour(getGateClosureTime(currentTime));
+  // Gate closure is 09:20 UK local time — display it in UK time, not UTC.
+  const gateTimeUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' })
+    .format(new Date(getGateClosureTime(currentTime)));
 
   // Calculate price thresholds to determine charge vs discharge hints
   const sortedPrices = [...forecastPrices].filter(p => p !== 0).sort((a, b) => a - b);
@@ -35,7 +37,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
     const updated = { ...existing, [field]: value };
 
     // Auto-fill price with forecast when user enters volume but hasn't set a price
-    if (field === 'volume' && value && !existing.price && fPrice > 0) {
+    if (field === 'volume' && value && !existing.price && fPrice !== 0) {
       updated.price = fPrice.toFixed(1);
     }
 
@@ -48,6 +50,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
   };
 
   const handleSubmit = () => {
+    if (!isAuctionOpen) return;
     const allBids = Object.entries(bids);
     const validBids: DayAheadBid[] = [];
     for (const [periodStr, bid] of allBids) {
@@ -73,7 +76,8 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
   const bidCount = Object.values(bids).filter(b => {
     const v = parseFloat(b.volume);
     const p = parseFloat(b.price);
-    return !isNaN(v) && !isNaN(p) && v > 0 && p > 0;
+    // Negative limit prices are valid — negative-price periods are prime charging slots.
+    return !isNaN(v) && !isNaN(p) && v > 0;
   }).length;
   // Project SoC across the delivery day combining already-cleared positions
   // (in playerSchedule) and the bids currently being entered in the form.
@@ -109,7 +113,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
       if (bid) {
         const v = parseFloat(bid.volume);
         const pr = parseFloat(bid.price);
-        if (!isNaN(v) && v > 0 && !isNaN(pr) && pr > 0) {
+        if (!isNaN(v) && v > 0 && !isNaN(pr)) {
           if (bid.side === OrderSide.BUY) chargeMw += v;
           else dischargeMw += v;
         }
@@ -134,7 +138,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
   }
   for (const [sp, bid] of Object.entries(bids)) {
     const v = parseFloat(bid.volume), pr = parseFloat(bid.price);
-    if (isNaN(v) || v <= 0 || isNaN(pr) || pr <= 0) continue;
+    if (isNaN(v) || v <= 0 || isNaN(pr)) continue;
     accumulate(bid.side === OrderSide.BUY ? 'charge' : 'discharge', v, pr);
     void sp;
   }
@@ -148,7 +152,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
     sp: `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`,
     price,
     socPct: socPctByPeriod[sp],
-    isLow: price > 0 && price <= lowThreshold,
+    isLow: price !== 0 && price <= lowThreshold,
     isHigh: price >= highThreshold,
   }));
 
@@ -156,8 +160,8 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
     <div className="panel day-ahead-full" id="dayahead-tab">
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
-          <h3>Day-Ahead Market (EPEX SPOT)</h3>
-          <HelpIcon text="The DA auction at 09:20 UK closes the schedule for the next delivery day. Submit bids for each half-hour settlement period. Green = cheap (charge). Red = expensive (discharge)." />
+          <h3>Day-Ahead Auction</h3>
+          <HelpIcon text="Blind auction for the next delivery day; gate closes 09:20 UK. Simplification: real GB DA auctions at 09:20 (EPEX) and 09:50 (N2EX) trade HOURLY products — half-hourly products clear in EPEX's 15:30 auction. Here you bid per half-hour at 09:20. On real Elexon days the price line is the Market Index Price (MID), a short-term traded-price index used as DA proxy — BMRS does not publish the auction results. Green = cheap (charge). Red = expensive (discharge)." />
           <span className="da-delivery-badge">
             Delivery <strong>{formatDeliveryDay(deliveryDay)}</strong>
           </span>
@@ -202,7 +206,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
             <div className="da-forecast-head">
               <h4>
                 48-Period Price Forecast
-                <HelpIcon text="Green = charge zone (cheap). Red = discharge zone (expensive). Blue = mid-range. Red line = actual SIP outturn once revealed." />
+                <HelpIcon text="Green = charge zone (cheap). Red = discharge zone (expensive). Blue = mid-range. Line = forecast price (on real days: Market Index Price)." />
               </h4>
               <div className="da-chart-legend inline">
                 <span className="legend-item"><span className="legend-bar da-bar" /> Forecast</span>
@@ -298,7 +302,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
               </div>
               <div className="da-status-sub">
                 {isAuctionOpen
-                  ? `Gate closes ${gateTimeUtc} UTC · ${gateHours}h left`
+                  ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left`
                   : `Cleared · awaiting delivery`}
               </div>
               <div className="da-status-sub">
@@ -402,7 +406,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
             <button
               className={`btn btn-submit da-submit-inline ${bidCount > 0 ? 'btn-buy' : ''}`}
               onClick={handleSubmit}
-              disabled={bidCount === 0}
+              disabled={bidCount === 0 || !isAuctionOpen}
             >
               {submitted
                 ? '✓ Submitted'
@@ -421,7 +425,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
           <div className="da-results-scroll">
             <table className="data-table">
               <thead>
-                <tr><th>Hour</th><th>Clearing</th><th>Your Action</th><th>Status</th></tr>
+                <tr><th>Time</th><th>Clearing</th><th>Your Action</th><th>Status</th></tr>
               </thead>
               <tbody>
                 {results.map(r => (
@@ -447,7 +451,7 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
       <div className="da-bid-section">
         {!isAuctionOpen && (
           <div className="da-gate-warning">
-            Gate has closed for this delivery day. Bids submitted now will apply to the next auction.
+            Gate has closed for this delivery day — no more bids. The next auction opens after midnight for the following day.
           </div>
         )}
           <div className="da-bid-scroll">
@@ -459,9 +463,9 @@ export default function DayAheadAuction({ dayAhead, currentTime, battery, onSubm
                 {Array.from({ length: 48 }, (_, sp) => {
                   const fPrice = forecastPrices[sp] ?? 0;
                   const bid = bids[sp];
-                  const isLow = fPrice > 0 && fPrice <= lowThreshold;
+                  const isLow = fPrice !== 0 && fPrice <= lowThreshold;
                   const isHigh = fPrice >= highThreshold;
-                  const isMid = fPrice > 0 && !isLow && !isHigh;
+                  const isMid = fPrice !== 0 && !isLow && !isHigh;
                   const defaultSide = isHigh ? OrderSide.SELL : OrderSide.BUY;
                   const isHoveredRow = hoveredPeriod === sp;
                   return (

@@ -5,7 +5,8 @@ import type { GameState } from './types';
 const SAVE_INDEX_KEY = 'bess-saves-index';
 const SAVE_PREFIX = 'bess-save-';
 const AUTOSAVE_KEY = 'bess-autosave';
-const ELEXON_CACHE_KEY = 'bess-elexon-cache';
+// v2: settlement-date filtering + real SIP — older cached days had wrong SP1-2 in BST
+const ELEXON_CACHE_KEY = 'bess-elexon-cache-v2';
 
 export interface SaveSlot {
   id: string;

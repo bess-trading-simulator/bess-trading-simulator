@@ -196,7 +196,7 @@ export const GLOSSARY: Record<string, string> = {
   'Day-Ahead (DA)': 'Auction market: bid before gate closure (09:20 UK time) for each half-hour of tomorrow. Clearing price set per SP.',
   'Intraday (ID)': 'Continuous trading market. Revise your DA positions as forecasts update. Trades until 1hr before delivery.',
   'SIP': 'System Imbalance Price — the actual settlement price from Elexon. This is what you pay/receive for any imbalance.',
-  'NIV': 'Net Imbalance Volume — whether the system was long (oversupplied) or short (undersupplied) in each SP. Key for NIV chasing.',
+  'NIV': 'Net Imbalance Volume (MWh per SP) — whether the system was short (positive NIV, Elexon convention: needed more energy) or long (negative NIV: oversupplied). Key for NIV chasing.',
   'NIV Chasing': 'Strategy: predict which direction the system will be imbalanced, then deliberately leave a position in that direction to profit from SIP.',
   'Balancing Mechanism (BM)': 'National Grid ESO dispatches batteries in real-time via BOAs. Premium prices but they choose when.',
   'BOA': 'Bid-Offer Acceptance — an instruction from NGESO to increase or decrease output in the BM.',
