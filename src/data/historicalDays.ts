@@ -1,6 +1,10 @@
-// Bundled historical GB market scenarios
-// Based on real market patterns from 2023-2024 GB power market
-// Each scenario has 48 half-hourly DA prices, SIP outturns, NIV, and context
+// Bundled ILLUSTRATIVE GB market scenarios.
+// These are fictional, hand-shaped days inspired by typical GB market patterns —
+// NOT real Elexon data. The `date` only sets weekday/season for the simulation;
+// events and numbers are invented for teaching. For real days use the Elexon
+// date picker (ids starting with `elexon-`, which carry `realData: true`).
+// Each scenario has 48 half-hourly DA prices, SIP outturns, NIV, and context.
+// NIV uses Elexon's sign convention: + = system short, − = system long (MWh).
 
 export interface HistoricalDay {
   id: string;
@@ -17,6 +21,8 @@ export interface HistoricalDay {
   keyEvents: { sp: number; text: string }[];
   optimalRevenue: number; // £ with perfect foresight on 50MW battery
   teachingPoints: string[];
+  /** true only for days loaded from Elexon: sipPrices are the real settled SIP. */
+  realData?: boolean;
 }
 
 // Helper to generate smooth daily price curves
@@ -71,7 +77,8 @@ function addDeviations(base: number[], maxDev: number, seed: number): number[] {
 
 function generateNiv(da: number[], sip: number[], seed: number): number[] {
   const rng = seededRng(seed);
-  return da.map((d, i) => Math.round((d - sip[i]) * 3 + (rng() - 0.5) * 200));
+  // SIP above DA ⇒ system short ⇒ positive NIV (Elexon convention)
+  return da.map((d, i) => Math.round((sip[i] - d) * 3 + (rng() - 0.5) * 200));
 }
 
 export const HISTORICAL_DAYS: HistoricalDay[] = [
@@ -108,8 +115,8 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
   {
     id: 'high-wind-day',
     date: '2024-02-22',
-    title: 'Storm Isha — Extreme Wind',
-    description: 'Major storm system brings wind generation to record levels. Prices collapse overnight and go negative during low demand. Excellent charging opportunity.',
+    title: 'Storm Day — Extreme Wind',
+    description: 'Illustrative: a major storm system brings wind generation to record levels. Prices collapse overnight and go negative during low demand. Excellent charging opportunity.',
     difficulty: 'easy',
     daPrices: dailyCurve(-5, 25, 8, 45, 15, 6, 400),
     sipPrices: (() => {
@@ -144,8 +151,8 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
   {
     id: 'beast-from-east',
     date: '2024-01-17',
-    title: 'Cold Snap — Triad Risk',
-    description: 'Temperatures drop to -5°C with low wind. Demand surges, prices spike to £300+. Critical Triad management day.',
+    title: 'Cold Snap — Scarcity Peak',
+    description: 'Illustrative: temperatures drop to -5°C with low wind. Demand surges and the evening peak spikes to £300+.',
     difficulty: 'hard',
     daPrices: (() => {
       const base = dailyCurve(42, 95, 75, 180, 55, 8, 700);
@@ -168,21 +175,21 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
       sip[33] = 280; sip[34] = 450; sip[35] = 380; sip[36] = 250;
       const niv = generateNiv(da, sip, 900);
       // System short during peak
-      niv[33] = -350; niv[34] = -580; niv[35] = -420; niv[36] = -280;
+      niv[33] = 350; niv[34] = 580; niv[35] = 420; niv[36] = 280;
       return niv;
     })(),
     windPct: 0.06,
     peakDemandGw: 51.8,
-    isTriadRisk: true,
+    isTriadRisk: false,
     keyEvents: [
-      { sp: 12, text: 'National Grid issues Triad warning — demand forecast 51 GW' },
+      { sp: 12, text: 'Demand forecast revised up to 51 GW — tight margins expected' },
       { sp: 30, text: 'Capacity market notice — reserve margins thin' },
-      { sp: 34, text: 'TRIAD LIKELY — SIP spikes to £450/MWh. Discharge now!' },
+      { sp: 34, text: 'System short — SIP spikes to £450/MWh. Discharge now!' },
       { sp: 38, text: 'Peak passes — prices dropping but still elevated' },
     ],
     optimalRevenue: 28000,
     teachingPoints: [
-      'Triad days are the most valuable for batteries — a single Triad avoidance can be worth £50k+',
+      'Scarcity peaks are among the most valuable periods for batteries (note: demand Triad charges were removed by the TCR in April 2023 — today the value comes from energy prices and imbalance)',
       'Even the overnight trough was expensive (£40+) — cold weather lifts the whole curve',
       'SIP massively exceeded DA forecast at the peak — system was short by 580 MWh',
       'NIV chasing would have been very profitable: system short from SP30 onward',
@@ -229,7 +236,7 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     id: 'interconnector-trip',
     date: '2024-03-08',
     title: 'Interconnector Trip — BM Stress',
-    description: 'IFA2 interconnector trips at 3pm, removing 1GW of imports. Prices spike sharply. BM dispatch rates hit £500+.',
+    description: 'Illustrative: an interconnector trips at 3pm, removing 1GW of imports. Prices spike sharply. BM dispatch rates hit £500+.',
     difficulty: 'hard',
     daPrices: dailyCurve(30, 55, 45, 72, 35, 5, 1500),
     sipPrices: (() => {
@@ -246,16 +253,16 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
       sip[31] = 180; sip[32] = 280; sip[33] = 350; sip[34] = 420;
       sip[35] = 380; sip[36] = 250; sip[37] = 150; sip[38] = 95;
       const niv = generateNiv(da, sip, 1700);
-      niv[31] = -400; niv[32] = -600; niv[33] = -750; niv[34] = -800;
-      niv[35] = -650; niv[36] = -400; niv[37] = -200;
+      niv[31] = 400; niv[32] = 600; niv[33] = 750; niv[34] = 800;
+      niv[35] = 650; niv[36] = 400; niv[37] = 200;
       return niv;
     })(),
     windPct: 0.20,
     peakDemandGw: 42.0,
     isTriadRisk: false,
     keyEvents: [
-      { sp: 31, text: 'IFA2 interconnector TRIPS — 1 GW of French imports lost instantly' },
-      { sp: 32, text: 'NGESO activates emergency BM dispatch — prices spiking' },
+      { sp: 31, text: 'Interconnector TRIPS — 1 GW of imports lost instantly' },
+      { sp: 32, text: 'NESO takes emergency BM actions — prices spiking' },
       { sp: 34, text: 'BM prices hit £420/MWh — batteries being dispatched at premium' },
       { sp: 37, text: 'Situation stabilising — other interconnectors increasing flow' },
     ],

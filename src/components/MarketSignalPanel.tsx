@@ -115,10 +115,10 @@ function buildSignal(state: GameState): Signal {
   const socMessage = `Can charge ~${Math.max(0, chargeSps)} SPs or discharge ~${Math.max(0, dischargeSps)} SPs at current limits.`;
   const nivMessage = niv === undefined
     ? 'NIV not available yet.'
-    : niv < -100
-      ? `System short (${niv} MWh): upward price risk.`
-      : niv > 100
-        ? `System long (+${niv} MWh): downward price risk.`
+    : niv > 100
+      ? `System short (+${niv} MWh): upward price risk.`
+      : niv < -100
+        ? `System long (${niv} MWh): downward price risk.`
         : `NIV balanced (${niv ?? 0} MWh).`;
   const daSipMessage = sip === null || da === undefined
     ? 'SIP not revealed for this SP yet.'

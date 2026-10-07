@@ -19,10 +19,11 @@ interface Props {
 
 const HISTORY_LOOKBACK = 12;
 
+// NIV sign follows Elexon: + = system short, − = system long (MWh per SP).
 // NIV forecasts carry uncertainty: you see a forecast ± band, but the system
-// settles at the actual NIV revealed after the SP. This deterministic error
+// settles at the actual SIP revealed after the SP. This deterministic error
 // (stable per SP+day) realises as slippage between your expected and settled price.
-const NIV_FORECAST_BAND = 220; // ±MW shown as the uncertainty band
+const NIV_FORECAST_BAND = 220; // ±MWh shown as the uncertainty band
 function nivForecastError(sp: number, dayIdx: number): number {
   const x = Math.sin((sp + 1) * 12.9898 + dayIdx * 78.233) * 43758.5453;
   return ((x - Math.floor(x)) - 0.5) * 2 * NIV_FORECAST_BAND; // uniform ±BAND
@@ -34,7 +35,7 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
   revealedPeriods: number;
   tradeBySp: Map<number, { isHit: boolean; direction: 'charge' | 'discharge' }>;
 }) {
-  // Color intensity scales to ±1500 MW
+  // Color intensity scales to ±1500 MWh. Short (+) → discharge colour, long (−) → charge colour.
   const cell = (sp: number) => {
     const v = niv[sp] ?? 0;
     const isFuture = sp > currentSp;
@@ -45,15 +46,15 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
     const bg = isFuture
       ? 'transparent'
       : t > 0
-        ? `color-mix(in srgb, #007be2 ${intensity}%, var(--niv-cell-base))`
-        : `color-mix(in srgb, #ff874b ${intensity}%, var(--niv-cell-base))`;
+        ? `color-mix(in srgb, #ff874b ${intensity}%, var(--niv-cell-base))`
+        : `color-mix(in srgb, #007be2 ${intensity}%, var(--niv-cell-base))`;
     const trade = tradeBySp.get(sp);
     return (
       <div
         key={sp}
         className={`niv-cell ${isCurrent ? 'current' : ''} ${isFuture ? 'future' : ''} ${!isRevealed && !isCurrent ? 'unrevealed' : ''}`}
         style={{ background: bg }}
-        title={`SP ${sp + 1} (${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}) · NIV ${v >= 0 ? '+' : ''}${v.toFixed(0)} MW${trade ? ` · ${trade.direction} ${trade.isHit ? 'hit' : 'miss'}` : ''}`}
+        title={`SP ${sp + 1} (${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}) · NIV ${v >= 0 ? '+' : ''}${v.toFixed(0)} MWh (${v >= 0 ? 'short' : 'long'})${trade ? ` · ${trade.direction} ${trade.isHit ? 'hit' : 'miss'}` : ''}`}
       >
         {trade && (
           <span className={`niv-cell-mark ${trade.isHit ? 'hit' : 'miss'}`}>
@@ -121,13 +122,20 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
   const niv = currentSpRevealed ? nivActual : nivActual + nivForecastError(currentSp, dayIdx);
   const nivBand = currentSpRevealed ? 0 : NIV_FORECAST_BAND;
   const daHere = dayAhead.forecastPrices[currentSp] ?? currentPrice?.price ?? 0;
-  const liveSettlePrice = imbalanceSettlementPrice(daHere, niv); // EXPECTED from forecast
+  // EXPECTED price from the NIV forecast via the simplified model. On real days
+  // the settle is Elexon's actual SIP, so the gap can be large — as in reality.
+  const liveSettlePrice = imbalanceSettlementPrice(daHere, niv);
   // Independent driver signals (wind surplus → long, demand above forecast → short).
-  const windError = (dayAhead.windOutturn[currentSp] ?? 0) - (dayAhead.windForecast[currentSp] ?? 0);
-  const demandError = (dayAhead.demandOutturn[currentSp] ?? 0) - (dayAhead.demandForecast[currentSp] ?? 0);
+  // Outturn of the running SP isn't published until after it ends, so the cards
+  // show the latest SETTLED SP's forecast error — the freshest real observation.
+  const signalSp = Math.min(currentSp, dayAhead.revealedPeriods) - 1;
+  const windError = signalSp >= 0 ? (dayAhead.windOutturn[signalSp] ?? 0) - (dayAhead.windForecast[signalSp] ?? 0) : 0;
+  const demandError = signalSp >= 0 ? (dayAhead.demandOutturn[signalSp] ?? 0) - (dayAhead.demandForecast[signalSp] ?? 0) : 0;
+  const signalSpLabel = signalSp >= 0 ? `SP${signalSp + 1}` : '—';
 
-  // Synthetic frequency from NIV: oversupply pushes freq up, undersupply pulls it down.
-  const freqDelta = Math.max(-0.4, Math.min(0.4, niv / 1500));
+  // ILLUSTRATIVE frequency from the NIV forecast: short pulls it down, long pushes
+  // it up. Real frequency reflects second-by-second balance after NESO acts.
+  const freqDelta = Math.max(-0.4, Math.min(0.4, -niv / 1500));
   const frequency = 50 + freqDelta;
 
   // Signal alignment / conviction: each independent driver votes long or short.
@@ -248,7 +256,8 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
     const energyMwh = t.volumeMw * 0.5;
     const settledSip = t.price; // engine settled at the actual NIV
     const settledPnL = direction === 'charge' ? -(settledSip * energyMwh) : (settledSip * energyMwh);
-    const isHit = (nivAct > 0 && direction === 'charge') || (nivAct < 0 && direction === 'discharge');
+    // Hit = helped the system: charge into a long system (NIV < 0), discharge into a short one (NIV > 0).
+    const isHit = (nivAct < 0 && direction === 'charge') || (nivAct > 0 && direction === 'discharge');
     imbRows.push({
       timestamp: t.timestamp, sp: tSp, direction, mw: t.volumeMw, energyMwh,
       nivActual: nivAct, forecastSip, settledSip, settledPnL, isHit,
@@ -266,10 +275,11 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
     ? imbRows.reduce((s, r) => s + Math.abs(r.settledSip - r.forecastSip), 0) / imbRows.length
     : null;
 
-  // NIV trend: last 12 revealed SPs.
-  const nivWindowStart = Math.max(0, currentSp - 11);
+  // NIV trend: last 12 SETTLED SPs (the running SP's NIV isn't known yet).
+  const nivWindowEnd = Math.min(currentSp, dayAhead.revealedPeriods);
+  const nivWindowStart = Math.max(0, nivWindowEnd - 12);
   const nivSeries: number[] = [];
-  for (let sp = nivWindowStart; sp <= currentSp; sp++) {
+  for (let sp = nivWindowStart; sp < nivWindowEnd; sp++) {
     const v = dayAhead.niv[sp];
     if (Number.isFinite(v)) nivSeries.push(v);
   }
@@ -306,8 +316,8 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
   };
 
   const freqColor = Math.abs(freqDelta) < 0.05 ? '#00a15d' : Math.abs(freqDelta) < 0.2 ? '#ff874b' : '#ff5f62';
-  const nivSign = niv >= 0 ? 'long' : 'short';
-  const nivColor = niv >= 0 ? '#007be2' : '#ff874b';
+  const nivSign = niv >= 0 ? 'short' : 'long';
+  const nivColor = niv >= 0 ? '#ff874b' : '#007be2';
   // Cyan = signal points long (→ charge), magenta = points short (→ discharge).
   const windErrColor = windError > 80 ? '#007be2' : windError < -80 ? '#ff874b' : '#9ca3af';
   const demandErrColor = demandError > 150 ? '#ff874b' : demandError < -150 ? '#007be2' : '#9ca3af';
@@ -338,7 +348,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
         {showIntro && (
           <div className="im-intro">
             <div className="im-intro-body">
-              <strong>NIV chasing:</strong> predict whether the grid will be <span style={{ color: 'var(--accent)' }}>long</span> (oversupplied) or <span style={{ color: 'var(--magenta)' }}>short</span>, then position <em>against</em> it — charge into a long system (cheap, sometimes paid), discharge into a short system (high SIP). Watch the <strong>NIV</strong> card and the pattern heatmap; you settle at the NIV-derived price.
+              <strong>NIV chasing:</strong> predict whether the grid will be <span style={{ color: 'var(--accent)' }}>long</span> (oversupplied) or <span style={{ color: 'var(--magenta)' }}>short</span>, then position <em>against</em> it — charge into a long system (cheap, sometimes paid), discharge into a short system (high SIP). Watch the <strong>NIV</strong> card (Elexon sign: <strong>+ = short</strong>, − = long) and the pattern heatmap. You commit before the SP and settle at the SIP published after it — on real days that's Elexon's actual SIP.
             </div>
             <button className="im-intro-dismiss" onClick={dismissIntro} aria-label="Dismiss">×</button>
           </div>
@@ -370,10 +380,19 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
           <span className="im-perf-sep" />
           <span className="im-perf-item">
             <span className="im-perf-label">NIV regime</span>
-            <strong className={nivAvgRecent >= 0 ? 'positive' : 'negative'}>
-              {nivAvgRecent >= 0 ? '+' : ''}{nivAvgRecent.toFixed(0)} MW
-            </strong>
-            <span className="im-perf-sub">{nivAvgRecent >= 0 ? 'mostly long' : 'mostly short'}</span>
+            {nivSeries.length === 0 ? (
+              <>
+                <strong className="muted">—</strong>
+                <span className="im-perf-sub">no settled SP yet</span>
+              </>
+            ) : (
+              <>
+                <strong className={nivAvgRecent >= 0 ? 'positive' : 'negative'}>
+                  {nivAvgRecent >= 0 ? '+' : ''}{nivAvgRecent.toFixed(0)} MWh
+                </strong>
+                <span className="im-perf-sub">{nivAvgRecent >= 0 ? 'mostly short' : 'mostly long'}</span>
+              </>
+            )}
           </span>
         </div>
 
@@ -385,6 +404,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
                 <div className="im-signal-head">
                   <Gauge size={12} />
                   <span>Frequency</span>
+                  <HelpIcon text="Illustrative only — derived from the NIV forecast, not a real 50 Hz reading. Real frequency reflects second-by-second balance after NESO's actions." />
                 </div>
                 <div className="im-signal-value" style={{ color: freqColor }}>
                   {frequency.toFixed(2)} <span className="im-signal-unit">Hz</span>
@@ -402,17 +422,17 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
                 <div className="im-signal-value" style={{ color: nivColor }}>
                   {niv >= 0 ? '+' : ''}{niv.toFixed(0)}
                   {nivBand > 0 && <span className="im-signal-band"> ±{nivBand}</span>}
-                  <span className="im-signal-unit"> MW</span>
+                  <span className="im-signal-unit"> MWh</span>
                 </div>
                 <div className="im-signal-hint">
-                  System {nivSign} → {niv >= 0 ? 'consume to earn' : 'generate to earn'}
+                  System {nivSign} → {niv >= 0 ? 'generate to earn' : 'consume to earn'}
                 </div>
               </div>
 
               <div className="im-signal-card">
                 <div className="im-signal-head">
                   <Wind size={12} />
-                  <span>Wind error</span>
+                  <span>Wind error · {signalSpLabel}</span>
                 </div>
                 <div className="im-signal-value" style={{ color: windErrColor }}>
                   {windError >= 0 ? '+' : ''}{windError.toFixed(0)} <span className="im-signal-unit">MW</span>
@@ -425,7 +445,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
               <div className="im-signal-card">
                 <div className="im-signal-head">
                   <Activity size={12} />
-                  <span>Demand error</span>
+                  <span>Demand error · {signalSpLabel}</span>
                 </div>
                 <div className="im-signal-value" style={{ color: demandErrColor }}>
                   {demandError >= 0 ? '+' : ''}{demandError.toFixed(0)} <span className="im-signal-unit">MW</span>
@@ -545,7 +565,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
             <div className="im-sp-price-row">
               <span className="im-sp-price-label">
                 Expected SIP
-                <HelpIcon text="Derived from the NIV FORECAST you see. The system settles at the actual NIV, revealed after the SP — so your realised price will differ by the forecast error (your slippage). Blind mode (eye toggle) hides this so you read the raw signals yourself." />
+                <HelpIcon text="Your EXPECTED price: the NIV forecast run through a simplified price model. You settle at the actual SIP published after the SP (on real Elexon days: the real SIP, set by marginal BM actions) — so your realised price can differ a lot (your slippage). Blind mode (eye toggle) hides this so you read the raw signals yourself." />
               </span>
               {hideSip ? (
                 <span className="im-sp-price-value im-sip-hidden">hidden</span>
@@ -663,7 +683,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
       <div className="im-pattern">
         <h4>
           Today&apos;s NIV pattern
-          <HelpIcon text="One cell per SP. Cyan = system long, magenta = short, intensity ∝ |NIV|. Past SPs show the actual settled NIV; the current SP shows your forecast. Future SPs are blank. ✓ / ✗ where you traded." />
+          <HelpIcon text="One cell per SP. Blue = system long (NIV < 0), orange = short (NIV > 0), intensity ∝ |NIV|. Past SPs show the actual settled NIV; the current SP shows your forecast. Future SPs are blank. ✓ / ✗ where you traded." />
         </h4>
         <NivHeatmap
           niv={dayAhead.niv.map((v, sp) => sp < dayAhead.revealedPeriods ? v : v + nivForecastError(sp, dayIdx))}
@@ -677,7 +697,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
       <div className="im-activity">
         <h4>
           Today&apos;s imbalance trades
-          <HelpIcon text="You traded on the FORECAST SIP but settled at the actual one. Δ = Settled − Forecast = your realised forecast error. Hit = your direction matched the actual NIV sign (charge when long, discharge when short)." />
+          <HelpIcon text="You traded on the FORECAST SIP but settled at the actual one. Δ = Settled − Forecast = your realised forecast error. Hit = your direction helped the system per the actual NIV (charge when long / NIV < 0, discharge when short / NIV > 0)." />
         </h4>
         {imbRows.length === 0 ? (
           <div className="empty-state" style={{ padding: 12 }}>

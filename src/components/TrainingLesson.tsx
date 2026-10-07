@@ -385,7 +385,7 @@ function LessonHeader({
         <h1>{meta.title}</h1>
         <span className="mode-badge">{meta.subtitle}</span>
         <span className={`data-badge ${dataSource}`}>
-          {dataSource === 'live' ? 'LIVE DATA' : dataSource === 'loading' ? 'LOADING...' : 'SYNTHETIC'}
+          {dataSource === 'live' ? 'REAL DATA' : dataSource === 'loading' ? 'LOADING...' : 'SIMULATED'}
         </span>
       </div>
       <div className="header-center">

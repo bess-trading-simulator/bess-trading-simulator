@@ -1,5 +1,14 @@
 // Elexon BMRS API integration for real GB market data
-// Public API, no key required. Data has ~1-2 day lag for system prices.
+// Public API, no key required. Initial system prices are published ~15-30 min
+// after each SP; we load the most recent *complete* settlement day.
+//
+// Conventions (Elexon):
+//  - NIV > 0  ⇒ system SHORT (needed more energy; SIP set by offers, usually high)
+//  - NIV < 0  ⇒ system LONG  (needed less energy; SIP set by bids, usually low)
+//  - NIV is a volume in MWh per SP.
+//  - Settlement days run in UK local time: SP1 starts 00:00 Europe/London, so in
+//    BST SP1 is 23:00Z on the previous calendar day. Every series is therefore
+//    fetched over a widened UTC window and filtered by `settlementDate`.
 
 const BASE = 'https://data.elexon.co.uk/bmrs/api/v1';
 
@@ -21,9 +30,10 @@ export interface ElexonMID {
 
 export interface ElexonDayData {
   date: string;
-  daPrices: number[];      // 48 SPs, £/MWh (from MID/APXMIDP)
-  sipPrices: number[];     // 48 SPs, system price
-  niv: number[];           // 48 SPs, net imbalance volume
+  daPrices: number[];      // 48 SPs, £/MWh — Market Index Price (MID, APXMIDP); a short-term
+                           // traded-price index used as DA proxy, NOT the EPEX/N2EX auction result
+  sipPrices: number[];     // 48 SPs, real single imbalance price (SSP = SBP since P305)
+  niv: number[];           // 48 SPs, net imbalance volume, MWh (Elexon sign: + = short)
   demandForecast: number[];  // 48 SPs, MW (national demand forecast)
   windForecast: number[];    // 48 SPs, MW (wind generation forecast)
   solarForecast: number[];   // 48 SPs, MW (solar generation forecast)
@@ -35,6 +45,27 @@ export interface ElexonDayData {
 
 function formatDate(d: Date): string {
   return d.toISOString().split('T')[0];
+}
+
+function addDays(date: string, days: number): string {
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return formatDate(d);
+}
+
+// UTC window that covers the whole UK-local settlement day in both GMT and BST
+// (SP1 can start at 23:00Z the day before). Results must be filtered by date.
+function settlementWindow(date: string): { from: string; to: string } {
+  return { from: `${addDays(date, -1)}T22:00:00Z`, to: `${addDays(date, 1)}T02:00:00Z` };
+}
+
+const londonDateFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+
+/** UK-local calendar date (YYYY-MM-DD) of a UTC timestamp — the settlement date of the SP starting then. */
+export function londonSettlementDate(iso: string): string {
+  return londonDateFmt.format(new Date(iso));
 }
 
 async function fetchJson(url: string): Promise<{ data?: unknown[] }> {
@@ -51,29 +82,29 @@ async function fetchSystemPrices(date: string): Promise<ElexonSystemPrice[]> {
   return (data.data ?? []) as ElexonSystemPrice[];
 }
 
-// Fetch Market Index Data (day-ahead reference prices) for a given date
+// Fetch Market Index Data for a given settlement date. MID is a volume-weighted
+// index of short-term exchange trades (APX/EPEX), used here as a DA price proxy.
 async function fetchMID(date: string): Promise<ElexonMID[]> {
-  const nextDay = new Date(date + 'T00:00:00Z');
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  const url = `${BASE}/datasets/MID?from=${date}T00:00:00Z&to=${formatDate(nextDay)}T00:00:00Z&format=json`;
+  const { from, to } = settlementWindow(date);
+  const url = `${BASE}/datasets/MID?from=${from}&to=${to}&format=json`;
   const data = await fetchJson(url);
-  return (data.data ?? []) as ElexonMID[];
+  return ((data.data ?? []) as ElexonMID[]).filter(d => d.settlementDate === date);
 }
 
 async function fetchDemandForecast(date: string): Promise<{ settlementPeriod: number; nationalDemand: number }[]> {
-  const nextDay = new Date(date + 'T00:00:00Z');
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  const url = `${BASE}/forecast/demand/day-ahead/latest?from=${date}T00:00:00Z&to=${formatDate(nextDay)}T00:00:00Z&format=json`;
+  const { from, to } = settlementWindow(date);
+  const url = `${BASE}/forecast/demand/day-ahead/latest?from=${from}&to=${to}&format=json`;
   const data = await fetchJson(url);
-  return (data.data ?? []) as { settlementPeriod: number; nationalDemand: number }[];
+  const all = (data.data ?? []) as { settlementDate: string; settlementPeriod: number; nationalDemand: number }[];
+  return all.filter(d => d.settlementDate === date);
 }
 
 async function fetchWindSolarForecast(date: string): Promise<{ settlementPeriod: number; businessType: string; quantity: number }[]> {
-  const nextDay = new Date(date + 'T00:00:00Z');
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  const url = `${BASE}/forecast/generation/wind-and-solar/day-ahead?from=${date}&to=${formatDate(nextDay)}&processType=day%20ahead&format=json`;
+  // This endpoint takes calendar dates; query a day either side and filter.
+  const url = `${BASE}/forecast/generation/wind-and-solar/day-ahead?from=${addDays(date, -1)}&to=${addDays(date, 1)}&processType=day%20ahead&format=json`;
   const data = await fetchJson(url);
-  return (data.data ?? []) as { settlementPeriod: number; businessType: string; quantity: number }[];
+  const all = (data.data ?? []) as { settlementDate: string; settlementPeriod: number; businessType: string; quantity: number }[];
+  return all.filter(d => d.settlementDate === date);
 }
 
 async function fetchDemandOutturn(date: string): Promise<{ settlementPeriod: number; initialDemandOutturn: number }[]> {
@@ -84,16 +115,17 @@ async function fetchDemandOutturn(date: string): Promise<{ settlementPeriod: num
 }
 
 interface GenActualRecord {
+  startTime: string;
   settlementPeriod: number;
   data: { psrType: string; quantity: number }[];
 }
 
 async function fetchActualGeneration(date: string): Promise<GenActualRecord[]> {
-  const nextDay = new Date(date + 'T00:00:00Z');
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-  const url = `${BASE}/generation/actual/per-type?from=${date}T00:00:00Z&to=${formatDate(nextDay)}T00:00:00Z&format=json`;
+  const { from, to } = settlementWindow(date);
+  const url = `${BASE}/generation/actual/per-type?from=${from}&to=${to}&format=json`;
   const data = await fetchJson(url);
-  return (data.data ?? []) as GenActualRecord[];
+  // No settlementDate field here — derive it from the SP start time in UK local time.
+  return ((data.data ?? []) as GenActualRecord[]).filter(r => r.startTime && londonSettlementDate(r.startTime) === date);
 }
 
 // Build a complete day's data from Elexon APIs
@@ -121,19 +153,16 @@ export async function fetchDayData(date: string): Promise<ElexonDayData> {
   for (const d of sysPrices) {
     const sp = d.settlementPeriod - 1;
     if (sp >= 0 && sp < 48) {
-      // Use systemBuyPrice as the imbalance price (SBP ≈ SIP for short system)
-      sipPrices[sp] = d.systemBuyPrice ?? d.systemSellPrice ?? 0;
+      // Single imbalance price since P305: SSP = SBP.
+      sipPrices[sp] = d.systemSellPrice ?? d.systemBuyPrice ?? 0;
+      // Keep Elexon's sign convention: + = system short, − = system long.
       niv[sp] = Math.round(d.netImbalanceVolume ?? 0);
     }
   }
 
-  // If DA prices are missing, use system prices as fallback
-  const hasDa = daPrices.some(p => p !== 0);
-  if (!hasDa) {
-    for (let i = 0; i < 48; i++) {
-      daPrices[i] = sipPrices[i];
-    }
-  }
+  // No fallback for missing MID: substituting the imbalance price would leak the
+  // outturn into the "DA" curve. A day without MID is treated as incomplete.
+  const midCount = apxPrices.filter(d => d.volume > 0).length;
 
   // Extract demand forecast
   const demandForecast = new Array(48).fill(0);
@@ -181,16 +210,17 @@ export async function fetchDayData(date: string): Promise<ElexonDayData> {
     }
   }
 
-  const isComplete = sysPrices.length >= 46; // allow for DST days
+  // 46/50 SPs on clock-change days. (Arrays are still 48 long: SP49-50 of a
+  // 50-SP day are dropped, SP47-48 of a 46-SP day stay 0 — known limitation.)
+  const isComplete = sysPrices.length >= 46 && midCount >= 46;
 
   return { date, daPrices, sipPrices, niv, demandForecast, windForecast, solarForecast, demandOutturn, windOutturn, solarOutturn, isComplete };
 }
 
-// Fetch the most recent complete settlement day (typically D-2 for safety)
+// Fetch the most recent complete settlement day (usually yesterday)
 export async function fetchLatestDay(): Promise<ElexonDayData> {
   const today = new Date();
-  // Try D-2 first (most reliable for complete data), then D-3 as fallback
-  for (const lag of [2, 3, 4, 5]) {
+  for (const lag of [1, 2, 3, 4, 5]) {
     const target = new Date(today);
     target.setUTCDate(target.getUTCDate() - lag);
     const dateStr = formatDate(target);

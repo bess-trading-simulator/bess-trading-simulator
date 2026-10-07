@@ -4,7 +4,8 @@ export const HOUR_MS = 3600_000;
 export const HALF_HOUR_MS = 1800_000;
 
 export function createClock(startDate?: Date) {
-  const start = startDate ?? new Date(2024, 0, 15, 0, 0, 0);
+  // UTC midnight (not browser-local) so the synthetic day starts at SP1.
+  const start = startDate ?? new Date(Date.UTC(2024, 0, 15, 0, 0, 0));
   return {
     currentTime: start.getTime(),
     isPaused: true,
@@ -128,4 +129,23 @@ export function formatDeliveryDay(time: number | null | undefined): string {
   const d = new Date(time);
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' });
+}
+
+/**
+ * Intraday gate closure for a battery's physical position: GB BM Gate Closure is
+ * 1 hour before the start of the SP — after that the notified position (FPN /
+ * ECVN) is frozen, so the product can no longer change the physical schedule.
+ */
+export const ID_GATE_CLOSURE_MS = HOUR_MS;
+
+/** True while SP `sp` (0-indexed) of the current day can still be traded intraday. */
+export function isIntradayGateOpen(currentTime: number, sp: number): boolean {
+  const spStart = getUtcDayStart(currentTime) + sp * HALF_HOUR_MS;
+  return currentTime < spStart - ID_GATE_CLOSURE_MS;
+}
+
+/** First SP (0-indexed) of the current day still open for intraday trading. */
+export function firstIntradayTradableSp(currentTime: number): number {
+  const msIntoDay = currentTime - getUtcDayStart(currentTime);
+  return Math.floor((msIntoDay + ID_GATE_CLOSURE_MS) / HALF_HOUR_MS) + 1;
 }

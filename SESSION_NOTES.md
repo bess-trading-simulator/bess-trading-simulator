@@ -333,3 +333,58 @@ No Playwright in repo deps. Verified by installing `playwright@1.60.0` + chromiu
 - DA finding #2 fixed (scheduled count); finding #1 is correct-by-design.
 - `src/index 2.css` is an unused Finder duplicate — safe to delete.
 - More test coverage possible: SoC projections (currently inline in components — would need extracting), the `tickGameState` delivery loop / day-rollover.
+
+---
+
+# Session 4 — Market-realism audit + Block 1 fixes (2026-10-07)
+
+Audit of DA / Intraday / Imbalance vs the real GB market (3 agents + independent
+verification). Full findings were reported in-session; Block 1 (quick correctness
+fixes without engine rework) is implemented on branch `fix/market-realism-block1`.
+
+## S4.1 Fixed (Block 1)
+- **NIV sign = Elexon convention everywhere: + = system SHORT, − = LONG** (MWh/SP).
+  Previously the app assumed + = long, so live days gave inverted advice/rewards.
+  Flipped: `imbalanceSettlementPrice`, `generateImbalanceDay`, `deriveForecastsFromNiv`,
+  scenario NIV (`historicalDays.ts`), Imbalance UI (card, heatmap colours, hit logic,
+  regime), MarketSignalPanel, BM reference/assessment, analysis texts, glossary/strategies.
+- **Real SIP on real days.** Live + Elexon-date scenarios use Elexon's actual SIP
+  (`systemSellPrice`, = SBP since P305). The NIV formula is now only the *simplified
+  model* for synthetic/illustrative days and for the player's *expected* SIP.
+  `HistoricalDay.realData` marks Elexon days.
+- **Elexon data layer** (`elexonApi.ts`): widened UTC window + `settlementDate` filter
+  (gen-actual: UK-local date from `startTime`) → SP1-2 correct in BST, no wind SP3
+  double-count. No SIP→DA fallback (leak); a day without MID is incomplete.
+  Latest day = most recent complete day (usually yesterday). Cache key bumped to v2.
+  Verified against the live API (SIP/NIV identical to raw, BST SP1-2 correct).
+- **Real-day refresh logic** (`useGameState`): only in real-data mode, applies ALL
+  series of the new day together (no real-forecast/synthetic-outturn mix); if the day
+  isn't complete → stays synthetic and the badge says so. Curated scenarios no longer
+  get overwritten by real Elexon data for their date. Stale-fetch guards.
+- **Imbalance leakage:** wind/demand error cards use the last SETTLED SP (labelled),
+  not the running SP's outturn; NIV regime excludes the running SP. Frequency card
+  labelled illustrative.
+- **DA:** bids rejected after gate closure (engine + UI); negative limit prices allowed
+  (count, SoC projection, KPIs); gate time shown in UK time; honest labels (MID = DA
+  proxy; real 09:20/09:50 auctions are hourly, half-hourly is 15:30).
+- **Intraday:** T-60 gate closure enforced (`isIntradayGateOpen`,
+  `firstIntradayTradableSp` in `clock.ts`); net position per SP capped at ±power rating.
+- **Labels:** header shows `Real data` / `Simulated`; launcher "Latest complete day";
+  curated scenarios marked "Illustrative · fictional data"; Storm Isha / IFA2 / Triad
+  claims removed. Synthetic clock starts at UTC midnight.
+- Tests: 31 green (new `gameState.test.ts`, gate tests, NIV-driver sign tests).
+
+## S4.2 Still open (Blocks 2-5, need a plan first)
+1. **Position book + imbalance settlement:** net DA+ID per SP, dispatch once, metered vs
+   contracted → imbalance at SIP into P&L. Today: gross delivery, clipped/failed
+   deliveries marked delivered without imbalance charge.
+2. **Today vs tomorrow market data split:** DA bids for D+1 are shown/graded against
+   day D's curve and delivered against a fresh synthetic day.
+3. **DA as real auction:** apply clearing (pay-as-cleared, rejected bids not delivered —
+   currently every bid fills at its own limit!), hidden actual curve with realistic
+   forecast error, bid curves, hourly product.
+4. **Intraday continuous order book** (bid/ask ladder, limit/market/IOC/FOK, resting
+   orders, partial fills, spread widening to T-60, D+1 products). `OrderBook.tsx`,
+   `OrderEntry.tsx`, order funcs in `market.ts` are currently dead code.
+5. Europe/London time model + 46/50-SP days; "optimal" benchmark ignores SoC
+   sequencing; BM assessment uses actual future NIV; ID price clamp −100/+300.

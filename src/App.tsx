@@ -153,6 +153,17 @@ export default function App() {
               <span className="hdr-sep" />
             </>
           )}
+          <span
+            className={`hdr-data-src ${dataSource}`}
+            title={dataSource === 'live'
+              ? 'This day is backed by real Elexon BMRS data (real SIP and NIV; DA = Market Index Price proxy).'
+              : dataSource === 'loading'
+                ? 'Loading Elexon data…'
+                : 'Simulated / illustrative data — not a real market day.'}
+          >
+            {dataSource === 'live' ? 'Real data' : dataSource === 'loading' ? 'Loading…' : 'Simulated'}
+          </span>
+          <span className="hdr-sep" />
           <div className="hdr-battery" title={`State of Charge: ${battery.socPct.toFixed(1)}%`}>
             <span className="hdr-stat-value">{battery.socPct.toFixed(1)}%</span>
             <span className="hdr-stat-muted">{battery.currentSocMwh.toFixed(0)}/{battery.config.capacityMwh} MWh · {battery.config.powerRatingMw} MW</span>

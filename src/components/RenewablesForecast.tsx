@@ -30,7 +30,7 @@ export default function RenewablesForecast({ dayAhead }: { dayAhead: DayAheadSta
   return (
     <div className="panel renewables-forecast">
       <h3>Demand · Wind · Solar Forecast</h3>
-      <p className="muted-note">Day-ahead national forecast for the delivery day. Wind surplus pushes the system long (+NIV); high demand pushes it short (−NIV).</p>
+      <p className="muted-note">Day-ahead national forecast for the delivery day. Wind surplus pushes the system long (−NIV); high demand pushes it short (+NIV, Elexon sign).</p>
       <ResponsiveContainer width="100%" height={260}>
         <LineChart data={data} margin={{ top: 6, right: 18, bottom: 4, left: 0 }}>
           <CartesianGrid strokeDasharray="2 4" stroke="#2c3245" strokeOpacity={0.6} vertical={false} />

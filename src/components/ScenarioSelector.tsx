@@ -83,9 +83,9 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         cacheElexonDay(fetchDate, data);
       }
 
-      const hasData = data.sipPrices.some((p: number) => p !== 0);
+      const hasData = data.sipPrices.some((p: number) => p !== 0) && data.daPrices.some((p: number) => p !== 0);
       if (!hasData) {
-        setFetchError('No data available for this date. Try a date at least 3 days ago.');
+        setFetchError('No complete data (system prices + market index) for this date. Try an earlier date.');
         setFetching(false);
         return;
       }
@@ -98,10 +98,11 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         id: `elexon-${fetchDate}`,
         date: fetchDate,
         title: `Real Market Data — ${fetchDate}`,
-        description: `Actual GB market data from Elexon. DA prices, SIP outturns, and NIV for ${fetchDate}. Price range: £${minPrice.toFixed(0)} to £${maxPrice.toFixed(0)}/MWh.`,
+        description: `Actual GB market data from Elexon: Market Index Price (MID, used as DA proxy), real SIP outturns, and NIV for ${fetchDate}. Price range: £${minPrice.toFixed(0)} to £${maxPrice.toFixed(0)}/MWh.`,
         difficulty: maxPrice > 200 ? 'hard' : maxPrice > 100 ? 'medium' : 'easy',
         daPrices: data.daPrices,
         sipPrices: data.sipPrices,
+        realData: true,
         niv: data.niv,
         windPct: avgWind,
         peakDemandGw: 0,
@@ -156,19 +157,19 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                   {onSelectLive && (
                     <button className={`scenario-card ${activeId === 'live' ? 'active' : ''}`} onClick={handleLive}>
                       <div className="scenario-card-header">
-                        <span className="scenario-date">Today</span>
+                        <span className="scenario-date">Latest complete day</span>
                         {activeId === 'live' && <span className="scenario-active-tag"><Check size={11} /> Active</span>}
                         <span className="scenario-difficulty" style={{ color: 'var(--charge)' }}>live</span>
                       </div>
                       <h3><Radio size={14} /> Live market data</h3>
-                      <p>The latest real GB market day from Elexon — live prices, NIV, wind, demand and solar.</p>
+                      <p>The most recent complete GB settlement day from Elexon — real SIP and NIV, Market Index Price (DA proxy), wind, demand and solar.</p>
                       <div className="scenario-focus">Trade today's real market</div>
                     </button>
                   )}
                   {HISTORICAL_DAYS.map(day => (
                     <button key={day.id} className={`scenario-card ${day.id === activeId ? 'active' : ''}`} onClick={() => setSelected(day)}>
                       <div className="scenario-card-header">
-                        <span className="scenario-date">{day.date}</span>
+                        <span className="scenario-date">Illustrative · fictional data</span>
                         {day.id === activeId && <span className="scenario-active-tag"><Check size={11} /> Active</span>}
                         <span className="scenario-difficulty" style={{ color: difficultyColors[day.difficulty] }}>
                           {day.difficulty}
@@ -195,7 +196,7 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                 </button>
                 <div className="scenario-detail-header">
                   <h3>{selected.title}</h3>
-                  <span className="scenario-date">{selected.date}</span>
+                  <span className="scenario-date">{selected.realData ? `Real Elexon data · ${selected.date}` : 'Illustrative scenario · fictional data'}</span>
                   <span className="scenario-difficulty" style={{ color: difficultyColors[selected.difficulty] }}>
                     {selected.difficulty}
                   </span>
