@@ -1,3 +1,5 @@
+import type { DeskHints } from '../engine/types';
+
 // Bundled ILLUSTRATIVE GB market scenarios.
 // These are fictional, hand-shaped days inspired by typical GB market patterns —
 // NOT real Elexon data. The `date` only sets weekday/season for the simulation;
@@ -5,6 +7,10 @@
 // date picker (ids starting with `elexon-`, which carry `realData: true`).
 // Each scenario has 48 half-hourly DA prices, SIP outturns, NIV, and context.
 // NIV uses Elexon's sign convention: + = system short, − = system long (MWh).
+// Price levels reflect recent GB markets (~£60-80 overnight, ~£150 evening peak).
+// The scenario day is the DAY-AHEAD AUCTION's delivery day: the session starts on
+// a normal lead-in day, you bid for the scenario day with deskHints visible, then
+// trade/deliver it with keyEvents breaking as live news at their SP.
 
 export interface HistoricalDay {
   id: string;
@@ -23,6 +29,10 @@ export interface HistoricalDay {
   teachingPoints: string[];
   /** true only for days loaded from Elexon: sipPrices are the real settled SIP. */
   realData?: boolean;
+  /** Unforeseen shock (1-based SPs): intraday prices it in only after the first key event */
+  shock?: { fromSp: number; toSp: number };
+  /** What the desk sees on D-1 before the auction (gas, temperature, wind, news) */
+  deskHints?: DeskHints;
 }
 
 // Helper to generate smooth daily price curves
@@ -81,119 +91,106 @@ function generateNiv(da: number[], sip: number[], seed: number): number[] {
   return da.map((d, i) => Math.round((sip[i] - d) * 3 + (rng() - 0.5) * 200));
 }
 
+/** Build a scenario's DA/SIP/NIV from a curve plus explicit SIP overrides (1-based SPs → value). */
+function scenarioData(
+  curve: Parameters<typeof dailyCurve>,
+  sipDev: number,
+  seeds: [number, number],
+  daOverrides: Record<number, number> = {},
+  sipOverrides: Record<number, number> = {},
+  nivOverrides: Record<number, number> = {},
+) {
+  const da = dailyCurve(...curve);
+  for (const [sp, v] of Object.entries(daOverrides)) da[Number(sp) - 1] = v;
+  const sip = addDeviations(da, sipDev, seeds[0]);
+  for (const [sp, v] of Object.entries(sipOverrides)) sip[Number(sp) - 1] = v;
+  const niv = generateNiv(da, sip, seeds[1]);
+  for (const [sp, v] of Object.entries(nivOverrides)) niv[Number(sp) - 1] = v;
+  return { daPrices: da, sipPrices: sip, niv };
+}
+
 export const HISTORICAL_DAYS: HistoricalDay[] = [
   {
     id: 'calm-winter-weekday',
     date: '2024-01-15',
     title: 'Calm Winter Weekday',
-    description: 'A typical January weekday with moderate demand, light winds, and a clear evening peak. Good for learning basic arbitrage.',
+    description: 'A typical January weekday with moderate demand, light winds and a clear evening peak. Good for learning the basic day-ahead arbitrage.',
     difficulty: 'easy',
-    daPrices: dailyCurve(28, 58, 48, 85, 38, 4, 100),
-    sipPrices: (() => {
-      const da = dailyCurve(28, 58, 48, 85, 38, 4, 100);
-      return addDeviations(da, 12, 200);
-    })(),
-    niv: (() => {
-      const da = dailyCurve(28, 58, 48, 85, 38, 4, 100);
-      const sip = addDeviations(da, 12, 200);
-      return generateNiv(da, sip, 300);
-    })(),
+    ...scenarioData([65, 112, 97, 156, 81, 6, 100], 18, [200, 300]),
     windPct: 0.18,
     peakDemandGw: 44.2,
     isTriadRisk: false,
     keyEvents: [
       { sp: 14, text: 'Morning demand ramp — prices rising as offices open' },
-      { sp: 34, text: 'Evening peak — highest prices of the day' },
+      { sp: 34, text: 'Evening peak under way — highest prices of the day' },
     ],
     optimalRevenue: 8500,
+    deskHints: { gasPct: 0.8, tempAnomalyC: -0.5 },
     teachingPoints: [
-      'Classic arbitrage day: charge SP3-8 (£26-30), discharge SP33-36 (£82-87)',
-      'The DA-SIP spread was small — DA forecast was fairly accurate',
-      'Evening peak is predictable on calm winter days',
+      'Classic arbitrage day: charge overnight (~£63-68), discharge into the evening peak (~£150-160)',
+      'Signals were quiet — the desk forecast was close, so tight limits worked',
+      'Evening peaks on calm winter weekdays are predictable: a linked charge/discharge block is the safe way to bid them',
     ],
   },
   {
     id: 'high-wind-day',
     date: '2024-02-22',
     title: 'Storm Day — Extreme Wind',
-    description: 'Illustrative: a major storm system brings wind generation to record levels. Prices collapse overnight and go negative during low demand. Excellent charging opportunity.',
+    description: 'Illustrative: a major storm system brings wind generation to record levels. Prices collapse overnight and go negative at low demand. Excellent charging opportunity.',
     difficulty: 'easy',
-    daPrices: dailyCurve(-5, 25, 8, 45, 15, 6, 400),
-    sipPrices: (() => {
-      const da = dailyCurve(-5, 25, 8, 45, 15, 6, 400);
-      const sip = addDeviations(da, 18, 500);
-      // Force some negative SPs
-      sip[3] = -15; sip[4] = -22; sip[5] = -18; sip[6] = -12;
-      return sip;
-    })(),
-    niv: (() => {
-      const da = dailyCurve(-5, 25, 8, 45, 15, 6, 400);
-      const sip = addDeviations(da, 18, 500);
-      sip[3] = -15; sip[4] = -22; sip[5] = -18; sip[6] = -12;
-      return generateNiv(da, sip, 600);
-    })(),
+    ...scenarioData([-15, 40, 15, 85, 30, 8, 400], 26, [500, 600], {}, { 4: -35, 5: -45, 6: -38, 7: -25 }),
     windPct: 0.78,
     peakDemandGw: 38.5,
     isTriadRisk: false,
     keyEvents: [
-      { sp: 4, text: 'Negative prices! Wind output exceeds demand — get paid to charge' },
+      { sp: 4, text: 'Negative prices — wind output exceeds demand, get paid to charge' },
       { sp: 22, text: 'Solar adds to oversupply — prices near zero' },
       { sp: 34, text: 'Evening peak still elevated but lower than normal' },
     ],
     optimalRevenue: 12000,
+    deskHints: {
+      gasPct: -2.5, windRevisionMw: 3500, tempAnomalyC: 1,
+      events: [{ kind: 'imports', startSp: 2, endSp: 13, confirmed: true, headline: 'Storm front arriving early: wind fleet at maximum overnight', effectPct: -0.25 }],
+    },
     teachingPoints: [
-      'Negative prices = free money. Always charge during negative prices',
-      'High wind compresses the overall price shape — lower peaks too',
-      'The spread is still good: charge at -£20, discharge at £45 = £65/MWh spread',
-      'SIP was more volatile than DA forecast — system struggled to balance with so much wind',
+      'Negative prices pay you to charge — bid generous buy limits overnight',
+      'The wind revision signal was large and positive: the desk forecast was too HIGH, actual prices came in lower',
+      'High wind compresses the whole curve — lower peaks too, so the spread is smaller than it looks',
+      'SIP was more volatile than DA — the system struggled to balance with so much wind',
     ],
   },
   {
     id: 'beast-from-east',
     date: '2024-01-17',
     title: 'Cold Snap — Scarcity Peak',
-    description: 'Illustrative: temperatures drop to -5°C with low wind. Demand surges and the evening peak spikes to £300+.',
+    description: 'Illustrative: temperatures drop to -5°C with low wind. Demand surges and the evening peak spikes far above normal.',
     difficulty: 'hard',
-    daPrices: (() => {
-      const base = dailyCurve(42, 95, 75, 180, 55, 8, 700);
-      // Spike SP33-36
-      base[33] = 220; base[34] = 310; base[35] = 280; base[36] = 195;
-      return base;
-    })(),
-    sipPrices: (() => {
-      const base = dailyCurve(42, 95, 75, 180, 55, 8, 700);
-      base[33] = 220; base[34] = 310; base[35] = 280; base[36] = 195;
-      const sip = addDeviations(base, 25, 800);
-      // SIP even higher during peak — system stress
-      sip[33] = 280; sip[34] = 450; sip[35] = 380; sip[36] = 250;
-      return sip;
-    })(),
-    niv: (() => {
-      const da = dailyCurve(42, 95, 75, 180, 55, 8, 700);
-      da[33] = 220; da[34] = 310; da[35] = 280; da[36] = 195;
-      const sip = addDeviations(da, 25, 800);
-      sip[33] = 280; sip[34] = 450; sip[35] = 380; sip[36] = 250;
-      const niv = generateNiv(da, sip, 900);
-      // System short during peak
-      niv[33] = 350; niv[34] = 580; niv[35] = 420; niv[36] = 280;
-      return niv;
-    })(),
+    ...scenarioData(
+      [87, 172, 140, 290, 108, 12, 700], 40, [800, 900],
+      { 34: 372, 35: 516, 36: 468, 37: 332 },
+      { 34: 468, 35: 740, 36: 628, 37: 420 },
+      { 34: 350, 35: 580, 36: 420, 37: 280 },
+    ),
     windPct: 0.06,
     peakDemandGw: 51.8,
     isTriadRisk: false,
     keyEvents: [
       { sp: 12, text: 'Demand forecast revised up to 51 GW — tight margins expected' },
-      { sp: 30, text: 'Capacity market notice — reserve margins thin' },
-      { sp: 34, text: 'System short — SIP spikes to £450/MWh. Discharge now!' },
+      { sp: 30, text: 'NESO Capacity Market Notice — reserve margins thin this evening' },
+      { sp: 34, text: 'System short — imbalance prices spiking' },
       { sp: 38, text: 'Peak passes — prices dropping but still elevated' },
     ],
     optimalRevenue: 28000,
+    deskHints: {
+      gasPct: 5, tempAnomalyC: -4, windRevisionMw: -2500,
+      events: [{ kind: 'outage', startSp: 32, endSp: 37, confirmed: true, headline: 'NESO: Electricity Margin Notice expected for 16:00–19:00', effectPct: 0.6 }],
+    },
     teachingPoints: [
-      'Scarcity peaks are among the most valuable periods for batteries (note: demand Triad charges were removed by the TCR in April 2023 — today the value comes from energy prices and imbalance)',
-      'Even the overnight trough was expensive (£40+) — cold weather lifts the whole curve',
-      'SIP massively exceeded DA forecast at the peak — system was short by 580 MWh',
-      'NIV chasing would have been very profitable: system short from SP30 onward',
-      'If you had 100% SoC going into SP33, discharging at £450 earns £22,500 in one period',
+      'Every signal pointed UP: colder, less wind, gas higher, a margin notice — the desk forecast was far too low at the peak',
+      'Sell limits set at the forecast left money on the table; the auction cleared well above it',
+      'Cold weather lifts the whole curve — even overnight charging was expensive',
+      'SIP exceeded DA massively at the peak (system short by ~580 MWh): energy held back for imbalance earned the most',
+      'Scarcity peaks are among the most valuable periods for batteries (demand Triad charges were removed by the TCR in April 2023)',
     ],
   },
   {
@@ -202,109 +199,77 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     title: 'Spring Solar Sunday',
     description: 'Bright spring Sunday with strong solar output. Low demand + high solar = near-zero midday prices. Classic duck curve.',
     difficulty: 'medium',
-    daPrices: dailyCurve(18, 35, 5, 55, 25, 5, 1100),
-    sipPrices: (() => {
-      const da = dailyCurve(18, 35, 5, 55, 25, 5, 1100);
-      const sip = addDeviations(da, 10, 1200);
-      // Midday collapse even worse than forecast
-      sip[21] = -8; sip[22] = -12; sip[23] = -5; sip[24] = 2;
-      return sip;
-    })(),
-    niv: (() => {
-      const da = dailyCurve(18, 35, 5, 55, 25, 5, 1100);
-      const sip = addDeviations(da, 10, 1200);
-      sip[21] = -8; sip[22] = -12; sip[23] = -5; sip[24] = 2;
-      return generateNiv(da, sip, 1300);
-    })(),
+    ...scenarioData([49, 76, 4, 108, 60, 8, 1100], 16, [1200, 1300], {}, { 22: -15, 23: -22, 24: -10, 25: 2 }),
     windPct: 0.22,
     peakDemandGw: 30.5,
     isTriadRisk: false,
     keyEvents: [
       { sp: 20, text: 'Solar output peaks — prices approaching zero' },
       { sp: 22, text: 'Negative prices as solar exceeds demand. Charge!' },
-      { sp: 32, text: 'Solar fading — prices ramping into evening peak' },
+      { sp: 32, text: 'Solar fading — prices ramping into the evening peak' },
     ],
     optimalRevenue: 6500,
+    deskHints: { gasPct: -1, tempAnomalyC: 2.5, windRevisionMw: 800 },
     teachingPoints: [
-      'The "duck curve": prices dip at midday from solar, then spike at sunset when solar drops off',
-      'Weekend demand is ~20% lower — reduces the peak price',
-      'Two charging windows: overnight AND midday solar trough',
-      'Best strategy: partial charge overnight, top up during solar trough, discharge at sunset',
+      'The duck curve: prices dip at midday from solar, then jump at sunset when solar drops off',
+      'Two charging windows: overnight AND the midday solar trough',
+      'The 30-min auction is ideal for the steep evening ramp: the two half-hours of an hour can differ a lot',
+      'Weekend demand is ~20 % lower — that caps the evening peak',
     ],
   },
   {
     id: 'interconnector-trip',
     date: '2024-03-08',
     title: 'Interconnector Trip — BM Stress',
-    description: 'Illustrative: an interconnector trips at 3pm, removing 1GW of imports. Prices spike sharply. BM dispatch rates hit £500+.',
+    description: 'Illustrative: an ordinary-looking day — until an interconnector trips in the afternoon and removes 1 GW of imports. Nobody saw it coming in the day-ahead auction.',
     difficulty: 'hard',
-    daPrices: dailyCurve(30, 55, 45, 72, 35, 5, 1500),
-    sipPrices: (() => {
-      const da = dailyCurve(30, 55, 45, 72, 35, 5, 1500);
-      const sip = addDeviations(da, 15, 1600);
-      // Interconnector trip at SP31 causes spike
-      sip[31] = 180; sip[32] = 280; sip[33] = 350; sip[34] = 420;
-      sip[35] = 380; sip[36] = 250; sip[37] = 150; sip[38] = 95;
-      return sip;
-    })(),
-    niv: (() => {
-      const da = dailyCurve(30, 55, 45, 72, 35, 5, 1500);
-      const sip = addDeviations(da, 15, 1600);
-      sip[31] = 180; sip[32] = 280; sip[33] = 350; sip[34] = 420;
-      sip[35] = 380; sip[36] = 250; sip[37] = 150; sip[38] = 95;
-      const niv = generateNiv(da, sip, 1700);
-      niv[31] = 400; niv[32] = 600; niv[33] = 750; niv[34] = 800;
-      niv[35] = 650; niv[36] = 400; niv[37] = 200;
-      return niv;
-    })(),
+    ...scenarioData(
+      [68, 108, 92, 135, 76, 8, 1500], 24, [1600, 1700], {},
+      { 31: 308, 32: 468, 33: 580, 34: 692, 35: 628, 36: 420, 37: 260, 38: 172 },
+      { 31: 400, 32: 600, 33: 750, 34: 800, 35: 650, 36: 400, 37: 200 },
+    ),
+    shock: { fromSp: 31, toSp: 38 },
+    // A quiet D-1: no real news — the trip is unforeseeable.
+    deskHints: { gasPct: -1, tempAnomalyC: 0.5, windRevisionMw: 300, events: [] },
     windPct: 0.20,
     peakDemandGw: 42.0,
     isTriadRisk: false,
     keyEvents: [
-      { sp: 31, text: 'Interconnector TRIPS — 1 GW of imports lost instantly' },
-      { sp: 32, text: 'NESO takes emergency BM actions — prices spiking' },
-      { sp: 34, text: 'BM prices hit £420/MWh — batteries being dispatched at premium' },
+      { sp: 31, text: 'Interconnector TRIPPED — 1 GW of imports lost instantly (unplanned)' },
+      { sp: 32, text: 'NESO taking emergency BM actions — imbalance prices spiking' },
+      { sp: 34, text: 'System still very short — BM offers accepted at £500+' },
       { sp: 37, text: 'Situation stabilising — other interconnectors increasing flow' },
     ],
     optimalRevenue: 22000,
     teachingPoints: [
-      'Unplanned outages cause the biggest DA-SIP divergence — this is where NIV chasing pays off',
-      'DA forecast was £72 at peak; SIP hit £420 — a £350/MWh gap',
-      'Batteries with capacity available for BM earned massive premiums',
-      'Key lesson: always keep some discharge headroom for unexpected events',
-      'If you\'d sold your full position in DA at £72, you missed out on £420 from SIP',
+      'Unplanned outages cause the biggest DA-SIP divergence: the auction cleared ~£135 at the peak, SIP hit ~£690',
+      'Nothing in the D-1 signals warned of it — you can only be prepared, not predict it',
+      'Keep some discharge headroom (energy in the battery) for unexpected events',
+      'Intraday repriced the moment the trip was announced — speed matters',
+      'If you had sold your whole battery in DA at ~£135, you missed the imbalance spike',
     ],
   },
   {
     id: 'summer-baseload',
     date: '2024-07-20',
     title: 'Quiet Summer Saturday',
-    description: 'Low demand summer weekend. Prices flat and spread is thin. Tests your patience — sometimes the best trade is no trade.',
+    description: 'Low demand summer weekend. Prices flat and the spread is thin. Tests your patience — sometimes the best trade is no trade.',
     difficulty: 'medium',
-    daPrices: dailyCurve(20, 32, 22, 42, 25, 3, 1900),
-    sipPrices: (() => {
-      const da = dailyCurve(20, 32, 22, 42, 25, 3, 1900);
-      return addDeviations(da, 8, 2000);
-    })(),
-    niv: (() => {
-      const da = dailyCurve(20, 32, 22, 42, 25, 3, 1900);
-      const sip = addDeviations(da, 8, 2000);
-      return generateNiv(da, sip, 2100);
-    })(),
+    ...scenarioData([52, 71, 55, 87, 60, 5, 1900], 13, [2000, 2100]),
     windPct: 0.30,
     peakDemandGw: 28.0,
     isTriadRisk: false,
     keyEvents: [
       { sp: 16, text: 'Morning ramp barely noticeable — weekend demand is flat' },
-      { sp: 34, text: 'Evening "peak" is only £42 — thin spread' },
+      { sp: 34, text: 'Evening "peak" is shallow — thin spread' },
     ],
     optimalRevenue: 2800,
+    deskHints: { gasPct: -1, windRevisionMw: 1000, tempAnomalyC: 0.5 },
     teachingPoints: [
-      'Not every day is profitable for arbitrage. Summer weekends have thin spreads',
-      'Peak-trough spread of ~£20 barely covers efficiency losses (10% of charge cost)',
-      'On days like this, frequency response (DC/DM) is more valuable than arbitrage',
-      'Revenue stacking: commit to DC during the day, only arbitrage if spread exceeds £15/MWh',
-      'Cycling the battery for minimal spread accelerates degradation — sometimes idle is correct',
+      'Not every day pays: a peak-trough spread of ~£35 barely covers efficiency losses and degradation',
+      'With a thin spread, a single wrong fill (only one leg of your arbitrage) wipes out the day',
+      'Frequency response would usually be worth more than arbitrage on a day like this',
+      'Sometimes idle is correct — cycling for a minimal spread only wears the battery',
     ],
   },
 ];

@@ -526,3 +526,23 @@ Fixed:
 - "Hourly pos." no longer includes 30-min block fills; 30-min expected cash includes
   blocks; block start ≤ SP46; consistent block ids; pre-S4.9 autosaves discarded.
 Tests: 57.
+
+## S4.11 Scenarios as auction day + live news / unplanned trips (2026-10-08)
+- `loadScenario(state, scenario, leadIn?)`: session starts on a normal LEAD-IN day
+  (`leadInDay`: scenario level without extremes) and the scenario day is `nextDay`
+  (the DA auction's delivery day). Real Elexon picks: the real previous day is the
+  lead-in (hook fetches it). `state.scenario` holds title/description/teaching points.
+- `withDeskForecast(day, seed, hints?)`: scenarios fix the "true" causes (DeskHints:
+  gas %, temperature, wind revision, events with effectPct) so D-1 signals tell the
+  story (cold snap: −4 °C, less wind, gas +5 %, margin notice). `events: []` = quiet D-1.
+- `LiveNews` on `MarketDay` (`dayAhead.todayNews` for today): published into
+  `state.events` (id `live-…`) when its SP starts. Optional shock window: intraday
+  anchors ignore the shock until the news broke, then reprice to DA + 0.8·(SIP−DA).
+- `nextDayFrom`: ~20 % of simulated days get an unplanned interconnector trip (700–1500
+  MW lost, NIV up for 4–9 SPs, SIP via model, DA unaffected) with live news.
+- Scenario data rewritten at recent price levels (≈1.6× + £20), curated SIP now used
+  for scenario days (was ignored), shock window for the trip scenario, teaching points
+  aligned with the new numbers. Key events are no longer listed before playing.
+- UI: `ScenarioBanner` (briefing D-1 → live → debrief with teaching points at the end of
+  the scenario day), `LiveNews` strip on Imbalance/Intraday, launcher/selector texts.
+Tests: 61.

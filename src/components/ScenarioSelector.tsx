@@ -208,19 +208,12 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                   <div className="stat-pill">Optimal: £{selected.optimalRevenue.toLocaleString()}</div>
                   {selected.isTriadRisk && <div className="stat-pill triad">TRIAD RISK</div>}
                 </div>
-                <div className="scenario-events">
-                  <h4><BookOpen size={14} /> Key Events</h4>
-                  {selected.keyEvents.map((evt, i) => (
-                    <div key={i} className="scenario-event">
-                      <span className="event-sp">SP{evt.sp}</span>
-                      <span>{evt.text}</span>
-                    </div>
-                  ))}
-                </div>
                 <div className="scenario-lessons">
-                  <h4>What You'll Learn</h4>
+                  <h4><BookOpen size={14} /> How this scenario runs</h4>
                   <ul>
-                    {selected.teachingPoints.map((pt, i) => <li key={i}>{pt}</li>)}
+                    <li>You start the day before. The scenario day is tomorrow — bid for it in the day-ahead auctions (09:20 hourly, 15:30 half-hourly) using the desk signals.</li>
+                    <li>Then you live through it: intraday, imbalance and news breaking during the day{selected.keyEvents.length ? ` (${selected.keyEvents.length} events — not revealed in advance)` : ''}.</li>
+                    <li>The debrief with what you should have learned appears at the end of the scenario day.</li>
                   </ul>
                 </div>
                 <button className="btn btn-submit btn-buy" onClick={() => handlePlay(selected)}>

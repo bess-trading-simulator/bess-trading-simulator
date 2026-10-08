@@ -10,7 +10,7 @@
 // which way the forecast is likely wrong. After clearing, the error is shown
 // split by cause. (Signals are simulated, also on real-data days.)
 
-import type { DeskEvent, DeskSignals, ForecastErrorBreakdown, MarketDay } from './types';
+import type { DeskEvent, DeskHints, DeskSignals, ForecastErrorBreakdown, LiveNews, MarketDay } from './types';
 import type { ElexonDayData } from './elexonApi';
 import { generateGBDayAhead, generateImbalanceDay, generateSIPOutturn, deriveForecastsFromNiv, mulberry32 } from './ukMarket';
 
@@ -94,16 +94,26 @@ function makeEvents(rng: () => number, prices: number[]): DeskEvent[] {
  * engine: forecast = actual − (gas + wind + temperature + event + noise).
  * Deterministic per seed.
  */
-export function withDeskForecast(day: MarketDay, seed: number): MarketDay {
+export function withDeskForecast(day: MarketDay, seed: number, hints?: DeskHints): MarketDay {
   const rng = mulberry32(seed + 31337);
   const actual = day.daClearing;
 
-  // True causes (the desk model doesn't know these yet).
-  const gasTrue = Math.max(-10, Math.min(10, gauss(rng) * 4));           // %
-  const tempTrue = Math.max(-5, Math.min(5, gauss(rng) * 1.5));          // °C
-  let w = gauss(rng) * 1200;
+  // True causes (the desk model doesn't know these yet). Scenarios can fix
+  // them to tell a story (e.g. a cold snap: much colder, less wind).
+  const gasRandom = Math.max(-10, Math.min(10, gauss(rng) * 4));          // %
+  const tempRandom = Math.max(-5, Math.min(5, gauss(rng) * 1.5));         // °C
+  const gasTrue = hints?.gasPct ?? gasRandom;
+  const tempTrue = hints?.tempAnomalyC ?? tempRandom;
+  let w = hints?.windRevisionMw ?? gauss(rng) * 1200;
   const windTrue = actual.map(() => { w = 0.92 * w + gauss(rng) * 350; return Math.round(w); }); // MW
-  const events = makeEvents(rng, actual);
+  const level = Math.max(30, actual.reduce((a, b) => a + Math.abs(b), 0) / actual.length);
+  const randomEvents = makeEvents(rng, actual);
+  const events: DeskEvent[] = hints?.events
+    ? [
+      ...hints.events.map(({ effectPct, ...e }) => ({ ...e, effect: round2(level * effectPct) })),
+      ...randomEvents.filter(e => e.effect === 0), // keep the odd false alarm
+    ]
+    : randomEvents;
 
   const gas = actual.map((p, sp) => round2((gasTrue / 100) * RULES.gasShare(sp) * Math.abs(p)));
   const wind = windTrue.map((mw, sp) => round2(-RULES.slopeAt(actual[sp]) * mw / 1000));
@@ -184,15 +194,35 @@ export function nextDayFrom(today: MarketDay, seed: number): MarketDay {
     return round2(p + slope * (rlNext[sp] - rlToday[sp]) / 1000 + level + ar);
   });
 
+  // Unplanned interconnector trip during delivery (~20 % of days): not in the DA
+  // price (nobody knew), but it makes the system short → NIV and SIP spike,
+  // and intraday reprices once the news breaks.
+  const niv = err.niv.slice();
+  const liveNews: LiveNews[] = [];
+  if (rng() < 0.2) {
+    const from = 12 + Math.floor(rng() * 28);
+    const to = Math.min(47, from + 3 + Math.floor(rng() * 6));
+    const lostMw = Math.round(700 + rng() * 800);
+    for (let sp = from; sp <= to; sp++) {
+      const fade = 1 - 0.6 * ((sp - from) / Math.max(1, to - from)); // operators re-dispatch over time
+      niv[sp] = Math.round(niv[sp] + lostMw * 0.5 * fade);          // MWh per SP
+    }
+    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
+    liveNews.push({ sp: from, category: 'outage', shock: { fromSp: from, toSp: to },
+      headline: `${ic} interconnector TRIPPED — ${lostMw} MW of imports lost (unplanned)` });
+    if (to < 47) liveNews.push({ sp: to + 1, category: 'outage', headline: `${ic} back to normal flow` });
+  }
+
   return withDeskForecast({
     day,
     source: 'synthetic',
     daForecast: daClearing,
     daClearing,
-    sipOutturn: generateSIPOutturn(daClearing, err.niv),
-    niv: err.niv,
+    sipOutturn: generateSIPOutturn(daClearing, niv),
+    niv,
     demandForecast, windForecast, solarForecast,
     demandOutturn, windOutturn, solarOutturn,
+    liveNews,
   }, seed);
 }
 
@@ -215,7 +245,20 @@ export function realMarketDay(day: number, data: ElexonDayData): MarketDay {
   };
 }
 
-/** Illustrative scenario day (curated prices/NIV); SIP from model unless real. */
+/**
+ * A "normal" lead-in day before a scenario day: the scenario's typical price
+ * level and shape without its extremes, plus noise; fresh wind/demand drivers.
+ */
+export function leadInDay(scenarioPrices: number[], day: number, seed: number): MarketDay {
+  const rng = mulberry32(seed + 1999);
+  const sorted = [...scenarioPrices].sort((a, b) => a - b);
+  const lo = sorted[Math.floor(sorted.length * 0.1)], hi = sorted[Math.floor(sorted.length * 0.75)];
+  const daClearing = scenarioPrices.map(p => round2(Math.max(lo, Math.min(hi, p)) * (0.92 + rng() * 0.16) + (rng() - 0.5) * 6));
+  const base = syntheticMarketDay(day, seed);
+  return { ...base, daForecast: daClearing, daClearing, sipOutturn: generateSIPOutturn(daClearing, base.niv) };
+}
+
+/** Scenario day (curated or real prices/SIP/NIV). */
 export function scenarioMarketDay(
   day: number,
   scenario: { daPrices: number[]; sipPrices: number[]; niv: number[]; realData?: boolean },
@@ -227,7 +270,8 @@ export function scenarioMarketDay(
     source: scenario.realData ? 'real' : 'synthetic',
     daForecast: scenario.daPrices,
     daClearing: scenario.daPrices,
-    sipOutturn: scenario.realData ? scenario.sipPrices : generateSIPOutturn(scenario.daPrices, scenario.niv),
+    // Curated scenarios carry their own SIP story (e.g. a trip spike), real days the real SIP.
+    sipOutturn: scenario.sipPrices,
     niv: scenario.niv,
     ...drivers,
   };
