@@ -58,7 +58,10 @@ export default function DaBlockOrders({ auction, blocks, submitted, results, isO
 
   const add = () => {
     if (error || !onAdd) return;
-    const id = `${auction === 'hourly' ? 'BH' : 'BQ'}-${Date.now().toString(36).slice(-4)}${Math.floor(Math.random() * 36).toString(36)}`;
+    // Next free id like BH3 / BQ2 (unique across draft and submitted blocks).
+    const prefix = auction === 'hourly' ? 'BH' : 'BQ';
+    const used = [...blocks, ...submitted].map(x => Number(x.id.replace(prefix, ''))).filter(Number.isFinite);
+    const id = `${prefix}${Math.max(0, ...used) + 1}`;
     onAdd({ ...input, id });
     setParentId('');
   };
