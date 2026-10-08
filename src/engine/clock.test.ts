@@ -57,3 +57,15 @@ describe('intraday gate closure (T-60)', () => {
     expect(isIntradayGateOpen(at(11, 10), first - 1)).toBe(false);
   });
 });
+
+describe('DA gate closure 09:20 UK on clock-change days', () => {
+  it('uses BST/GMT at the gate instant, not at midnight', async () => {
+    const { getGateClosureTime, getHalfHourGateClosureTime } = await import('./clock');
+    const springChange = Date.UTC(2026, 2, 29); // BST starts 01:00 UTC
+    const autumnChange = Date.UTC(2026, 9, 25); // BST ends 01:00 UTC
+    expect(getGateClosureTime(springChange)).toBe(springChange + (8 * 60 + 20) * 60000);
+    expect(getGateClosureTime(autumnChange)).toBe(autumnChange + (9 * 60 + 20) * 60000);
+    expect(getHalfHourGateClosureTime(springChange)).toBe(springChange + (14 * 60 + 30) * 60000);
+    expect(getHalfHourGateClosureTime(autumnChange)).toBe(autumnChange + (15 * 60 + 30) * 60000);
+  });
+});

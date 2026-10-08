@@ -61,6 +61,9 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
   const [draftBlocks, setDraftBlocks] = useState<DaBlockOrder[]>(() => submittedBlocks);
   const [sent, setSent] = useState(false);
   const [syncedDay, setSyncedDay] = useState(dayAhead.deliveryDay);
+  // After Submit, mirror exactly what the engine accepted (it may trim orders).
+  const [awaitingSync, setAwaitingSync] = useState(false);
+  if (awaitingSync) { setAwaitingSync(false); setDraft(toDraft(submitted)); setDraftBlocks(submittedBlocks); }
   if (syncedDay !== dayAhead.deliveryDay) { setSyncedDay(dayAhead.deliveryDay); setDraft(toDraft(submitted)); setDraftBlocks(submittedBlocks); }
 
   const P = battery.config.powerRatingMw;
@@ -76,14 +79,23 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
 
   // Your position for the delivery day from the HOURLY auction (and hourly blocks).
   const hourlyPos = Array.from({ length: 48 }, (_, sp) => dayAhead.playerSchedule
-    .filter(p => p.deliveryDay === day && p.period === sp && p.market === 'da' && (dayAhead.hhResults?.length ? p.lockedAt < (dayAhead.hhGateClosureTime ?? 0) : true))
+    .filter(p => p.deliveryDay === day && p.period === sp && p.market === 'da' && p.lockedAt < (dayAhead.hhGateClosureTime ?? Infinity))
+    .reduce((a, p) => a + signedMw(p), 0));
+  // Power room is judged on the WHOLE position for that SP (hourly DA + any D+1 intraday), like the engine.
+  const netAll = Array.from({ length: 48 }, (_, sp) => dayAhead.playerSchedule
+    .filter(p => p.deliveryDay === day && p.period === sp)
     .reduce((a, p) => a + signedMw(p), 0));
 
   const draftBids = fromDraft(draft);
-  const key = (bids: HalfHourBid[]) => sanitizeHalfHourBids(bids, P, hourlyPos).map(b => `${b.sp}|${b.side}|${b.volumeMw}|${b.price.toFixed(2)}`).sort().join(';');
+  const key = (bids: HalfHourBid[]) => sanitizeHalfHourBids(bids, P, netAll).map(b => `${b.sp}|${b.side}|${b.volumeMw}|${b.price.toFixed(2)}`).sort().join(';');
   const blockKey = (bs: DaBlockOrder[]) => bs.map(b => `${b.id}|${b.side}|${b.startSp}|${b.endSp}|${b.volumeMw}|${b.price}|${b.parentId ?? ''}`).sort().join(';');
   const dirty = key(draftBids) !== key(submitted) || blockKey(draftBlocks) !== blockKey(submittedBlocks);
-  const violations = powerViolations(sanitizeHalfHourBids(draftBids, P, hourlyPos), draftBlocks, P, hourlyPos);
+  const crossing = Array.from({ length: 48 }, (_, sp) => {
+    const buy = draftBids.find(b => b.sp === sp && b.side === OrderSide.BUY);
+    const sell = draftBids.find(b => b.sp === sp && b.side === OrderSide.SELL);
+    return buy && sell && buy.price >= sell.price ? `crossing curve ${spLabel(sp)}: max £${buy.price} ≥ min £${sell.price} (buy max must be below sell min)` : null;
+  }).filter((x): x is string => x !== null);
+  const violations = [...powerViolations(draftBids, draftBlocks, P, netAll), ...crossing];
   const draftCount = draftBids.length + draftBlocks.length;
   const submittedCount = submitted.length + submittedBlocks.length;
 
@@ -92,7 +104,10 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
   const totalNet = hourlyPos.map((n, sp) => {
     let v = n;
     if (!cleared) {
-      for (const b of draftBids) if (b.sp === sp) v += b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw;
+      // With a buy AND a sell on the same SP only one leg can fill — use the one that fills at the forecast.
+      const legs = draftBids.filter(b => b.sp === sp);
+      const used = legs.length > 1 ? legs.filter(b => fc[sp] !== undefined && bidFills(b, fc[sp])) : legs;
+      for (const b of used) v += b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw;
       for (const b of halfBlocks) if (sp >= b.startSp && sp <= b.endSp) v += b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw;
     } else {
       v = dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === sp && p.market === 'da').reduce((a, p) => a + signedMw(p), 0);
@@ -118,9 +133,21 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
     return (soc / cap) * 100;
   });
 
+  const blockAvgFc = (b: DaBlockOrder) => {
+    let sum = 0;
+    for (let sp = b.startSp; sp <= b.endSp; sp++) sum += fc[sp] ?? 0;
+    return sum / (b.endSp - b.startSp + 1);
+  };
   const expectedCash = draftBids
     .filter(b => fc[b.sp] !== undefined && bidFills(b, fc[b.sp]))
-    .reduce((a, b) => a + (b.side === OrderSide.SELL ? 1 : -1) * b.volumeMw * 0.5 * fc[b.sp], 0);
+    .reduce((a, b) => a + (b.side === OrderSide.SELL ? 1 : -1) * b.volumeMw * 0.5 * fc[b.sp], 0)
+    + draftBlocks
+      .filter(b => (b.side === OrderSide.BUY ? blockAvgFc(b) <= b.price : blockAvgFc(b) >= b.price))
+      .reduce((a, b) => {
+        let cash = 0;
+        for (let sp = b.startSp; sp <= b.endSp; sp++) cash += (b.side === OrderSide.SELL ? 1 : -1) * b.volumeMw * 0.5 * (fc[sp] ?? 0);
+        return a + cash;
+      }, 0);
 
   const setField = (sp: number, f: keyof Draft, v: string) => {
     setSent(false);
@@ -134,10 +161,9 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
 
   const submit = () => {
     if (!isOpen || !onSubmitHalfHourBids || violations.length) return;
-    const clean = sanitizeHalfHourBids(draftBids, P, hourlyPos);
-    onSubmitHalfHourBids(clean);
+    onSubmitHalfHourBids(sanitizeHalfHourBids(draftBids, P, netAll));
     onSetBlocks?.('half', draftBlocks);
-    setDraft(toDraft(clean));
+    setAwaitingSync(true);
     setSent(true);
   };
 
@@ -266,12 +292,12 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
                 </div>
                 <button className={`btn btn-submit da-submit-inline ${dirty ? 'btn-buy' : ''}`} disabled={!dirty || violations.length > 0} onClick={submit}>
                   {violations.length
-                    ? 'Over power limit — fix first'
+                    ? 'Fix orders first'
                     : dirty ? `Submit ${draftCount} order${draftCount === 1 ? '' : 's'}${draftBlocks.length ? ` (${draftBlocks.length} block${draftBlocks.length === 1 ? '' : 's'})` : ''}` : submittedCount ? 'Orders up to date' : 'No orders yet'}
                 </button>
                 {violations.length > 0 && (
                   <div className="da-power-warning negative">
-                    Exceeds {P} MW incl. your hourly position: {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
+                    {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
                   </div>
                 )}
               </>

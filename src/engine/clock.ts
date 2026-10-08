@@ -83,34 +83,22 @@ export function isBST(time: number): boolean {
   return time < switchTime;
 }
 
-// EPEX SPOT GB DA gate closure: 09:20 UK local time
-// BST: 09:20 UK = 08:20 UTC | GMT: 09:20 UK = 09:20 UTC
-function gateClosureUtcHour(time: number): { hour: number; minute: number } {
-  return isBST(time) ? { hour: 8, minute: 20 } : { hour: 9, minute: 20 };
+// EPEX SPOT GB DA gate closure: 09:20 UK local time (08:20 UTC in BST, 09:20 UTC
+// in GMT). BST is decided at the gate instant itself, so clock-change days
+// (last Sunday of March / October) are right too.
+function gateOnDay(dayStart: number): number {
+  return ukLocalTimeOnDay(dayStart, 9, 20);
 }
 
 export function getGateClosureTime(currentTime: number): number {
-  const d = new Date(currentTime);
-  const { hour, minute } = gateClosureUtcHour(currentTime);
-  const gateClosure = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, minute, 0));
-
-  if (d.getTime() >= gateClosure.getTime()) {
-    const nextDay = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0);
-    const next = gateClosureUtcHour(nextDay);
-    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, next.hour, next.minute, 0)).getTime();
-  }
-  return gateClosure.getTime();
+  const day = getUtcDayStart(currentTime);
+  const gate = gateOnDay(day);
+  return currentTime >= gate ? gateOnDay(day + 24 * HOUR_MS) : gate;
 }
 
 export function getNextDeliveryDay(currentTime: number): number {
-  const d = new Date(currentTime);
-  const { hour, minute } = gateClosureUtcHour(currentTime);
-  const gateClosure = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, minute, 0));
-
-  if (d.getTime() >= gateClosure.getTime()) {
-    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 2, 0, 0, 0)).getTime();
-  }
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0)).getTime();
+  const day = getUtcDayStart(currentTime);
+  return day + (currentTime >= gateOnDay(day) ? 2 : 1) * 24 * HOUR_MS;
 }
 
 export function hoursUntilGateClosure(currentTime: number): number {

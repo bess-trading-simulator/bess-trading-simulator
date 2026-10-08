@@ -52,7 +52,7 @@ export default function DaBlockOrders({ auction, blocks, submitted, results, isO
   const error = validateBlock(input, mine, powerMw);
   const fillsAtForecast = Number.isFinite(input.price) && (side === OrderSide.BUY ? avgFc <= input.price : avgFc >= input.price);
 
-  const startOptions = Array.from({ length: 48 / step }, (_, i) => i * step);
+  const startOptions = Array.from({ length: 48 / step }, (_, i) => i * step).filter(sp => sp <= 46); // ≥ 2 periods
   const endOptions = Array.from({ length: 48 }, (_, sp) => sp).filter(sp => (auction === 'hourly' ? sp % 2 === 1 : true) && sp > start);
   const parents = mine.filter(b => !b.parentId);
 

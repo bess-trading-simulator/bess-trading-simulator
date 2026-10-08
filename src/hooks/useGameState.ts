@@ -30,7 +30,7 @@ function storeRealMode(on: boolean) {
 
 /** Saves from before the today/tomorrow split can't be migrated meaningfully. */
 function isCurrentSave(saved: GameState | null): saved is GameState {
-  return Boolean(saved && saved.nextDay?.signals && saved.intraday && Array.isArray(saved.ledger) && saved.dayAhead?.bids?.every(b => typeof b.hour === 'number'));
+  return Boolean(saved && saved.nextDay?.signals && saved.intraday && Array.isArray(saved.ledger) && saved.dayAhead?.bids?.every(b => typeof b.hour === 'number') && typeof saved.dayAhead?.hhGateClosureTime === 'number');
 }
 
 /**

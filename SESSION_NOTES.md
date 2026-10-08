@@ -507,3 +507,22 @@ classic and linked block orders there (block parameters doc). Shown for both auc
   list atomically; parents before children, orphans dropped). Status per block: draft —
   not sent / submitted / accepted / rejected. `powerViolations` blocks submits where
   single orders + blocks (+ hourly position in the 30-min auction) exceed ±P per SP.
+
+## S4.10 DA bug hunt (2026-10-08) — code review + randomized simulation
+Simulation (200+ seeds, clock-change weekends): cash conservation, DA positions vs results,
+rollover/settlement once per SP, energy/SoC, no NaN, forecast decomposition all PASS.
+Fixed:
+- Hourly gate was 1 h off on clock-change days (BST decided at UTC midnight) →
+  `getGateClosureTime`/`getNextDeliveryDay` use `ukLocalTimeOnDay(day, 9, 20)`.
+- Net position could exceed ±P: D+1 intraday ignored pending 30-min orders/blocks
+  (`orderRoomMw` now reserves them); 30-min orders ignored working intraday orders and
+  submitted 30-min blocks; hourly orders submitted after blocks weren't checked.
+- Hourly view after 15:30 mixed in 30-min fills (now hourly result only, both SPs).
+- Unsent drafts were lost on tab switches → DA views stay mounted (hidden).
+- After Submit, drafts mirror exactly what the engine accepted (no stuck "Submit").
+- 30-min view used DA-only net for checks (engine uses all markets) → aligned.
+- Crossing 2-step curves (buy max ≥ sell min) blocked; projections with buy+sell in
+  one product use only the leg that fills at forecast.
+- "Hourly pos." no longer includes 30-min block fills; 30-min expected cash includes
+  blocks; block start ≤ SP46; consistent block ids; pre-S4.9 autosaves discarded.
+Tests: 57.
