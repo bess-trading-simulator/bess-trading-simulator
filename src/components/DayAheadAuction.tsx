@@ -5,6 +5,8 @@ import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
 import { DA_HOURS, hourlyPrices, bidFills, sanitizeBids } from '../engine/dayAheadAuction';
+import { RULES } from '../engine/marketDay';
+import type { DeskSignals } from '../engine/types';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import HelpIcon from './HelpIcon';
 import { CheckCircle } from 'lucide-react';
@@ -69,29 +71,35 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
 
   const forecast = useMemo(() => hourlyPrices(nextDay.daForecast), [nextDay.daForecast]);
   const clearingH = useMemo(() => hourlyPrices(nextDay.daClearing), [nextDay.daClearing]);
-  // Fundamental model components per hour (mean of the two half-hours).
-  const model = nextDay.forecastModel;
+  // Today's cleared DA price per hour — context for tomorrow's forecast.
+  const todayH = useMemo(() => hourlyPrices(dayAhead.forecastPrices), [dayAhead.forecastPrices]);
+  // Market signals since the desk model ran, per hour.
+  const sig = nextDay.signals;
+  const errs = nextDay.forecastErrors;
   const hourlyOf = (arr?: number[]) => (arr ? hourlyPrices(arr) : new Array<number>(DA_HOURS).fill(0));
-  const refH = hourlyOf(model?.ref);
-  const demH = hourlyOf(model?.demandDelta);
-  const windH = hourlyOf(model?.windDelta);
-  const solarH = hourlyOf(model?.solarDelta);
-  const shockH = hourlyOf(nextDay.truth?.shock);
-  const beta = model?.beta ?? 0;
-  const gw = (mw: number) => `${mw >= 0 ? '+' : '−'}${Math.abs(mw / 1000).toFixed(1)} GW`;
+  const windRevH = hourlyOf(sig?.windRevisionMw);
   const pounds = (v: number) => `${v >= 0 ? '+' : '−'}£${Math.abs(v).toFixed(2)}`;
-  const dRl = (h: number) => demH[h] - windH[h] - solarH[h];
-  const driverText = (h: number) =>
-    `Today's DA £${refH[h].toFixed(2)} · demand ${gw(demH[h])}, wind ${gw(windH[h])}, solar ${gw(solarH[h])} `
-    + `→ residual load ${gw(dRl(h))} × £${beta.toFixed(1)}/GW = ${pounds(beta * dRl(h) / 1000)} → forecast £${forecast[h].toFixed(2)}`;
+  const eventsIn = (h: number) => (sig?.events ?? []).filter(e => e.startSp <= 2 * h + 1 && e.endSp >= 2 * h);
+  type Chip = { label: string; dir: 'up' | 'down'; title: string };
+  const chipsFor = (h: number): Chip[] => {
+    if (!sig) return [];
+    const out: Chip[] = [];
+    if (Math.abs(sig.gasPct) >= 1) out.push({ label: 'Gas', dir: sig.gasPct > 0 ? 'up' : 'down', title: `Gas ${sig.gasPct > 0 ? '+' : ''}${sig.gasPct.toFixed(1)}% overnight` });
+    const wr = windRevH[h];
+    if (Math.abs(wr) >= 500) out.push({ label: 'Wind', dir: wr > 0 ? 'down' : 'up', title: `Wind ${wr > 0 ? '+' : '−'}${Math.abs(wr / 1000).toFixed(1)} GW vs model` });
+    const peak = h >= 16 && h <= 19;
+    if (Math.abs(sig.tempAnomalyC) >= 0.8) out.push({ label: sig.tempAnomalyC < 0 ? 'Cold' : 'Mild', dir: sig.tempAnomalyC < 0 ? 'up' : 'down', title: `Temperature ${sig.tempAnomalyC > 0 ? '+' : ''}${sig.tempAnomalyC.toFixed(1)}°C vs normal${peak ? ' (peak hour: stronger)' : ''}` });
+    for (const e of eventsIn(h)) {
+      out.push({ label: e.kind === 'imports' ? 'Imports' : e.kind === 'outage' ? 'Outage' : 'IC', dir: e.kind === 'imports' ? 'down' : 'up', title: `${e.headline}${e.confirmed ? '' : ' — unconfirmed'}` });
+    }
+    return out;
+  };
   const errorText = (h: number) => {
     const err = clearingH[h] - forecast[h];
-    if (nextDay.truth) {
-      const slope = (nextDay.truth.beta - beta) * dRl(h) / 1000;
-      return `Model error ${pounds(err)}: merit order was £${nextDay.truth.beta.toFixed(1)}/GW vs your £${beta.toFixed(1)}/GW (${pounds(slope)}), `
-        + `market shock — gas/carbon, outages, interconnectors, other bids (${pounds(shockH[h])}).`;
-    }
-    return `Model error ${pounds(err)}: not explained by residual load — gas/carbon, plant outages, interconnector flows and other participants' bids.`;
+    if (!errs) return `Forecast error ${pounds(err)}.`;
+    const part = (arr: number[]) => (arr[2 * h] + arr[2 * h + 1]) / 2;
+    return `Forecast error ${pounds(err)} = gas ${pounds(part(errs.gas))} · wind ${pounds(part(errs.wind))} · `
+      + `temperature ${pounds(part(errs.temperature))} · events ${pounds(part(errs.event))} · unexplained ${pounds(part(errs.noise))}`;
   };
   const resultByHour = useMemo(() => new Map(results.map(r => [r.hour, r])), [results]);
   const sorted = [...forecast].sort((a, b) => a - b);
@@ -163,7 +171,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
     hour: `${String(h).padStart(2, '0')}:00`,
     forecast: f,
     clearing: isAuctionOpen ? null : (resultByHour.get(h)?.clearingPrice ?? clearingH[h]),
-    todayDa: model ? refH[h] : null,
+    todayDa: todayH[h] || null,
     socPct: socPct[h],
     isLow: f <= lowT,
     isHigh: f >= highT,
@@ -223,7 +231,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3>Day-Ahead Auction · hourly</h3>
-          <HelpIcon text="Blind, uniform-price auction for the next delivery day (EPEX GB 09:20 UK style, HOURLY products). Per hour you can bid to BUY (charge) up to a max price and/or SELL (discharge) down to a min price — a 2-step bid curve. At gate closure the auction clears: an order fills only if the clearing price meets its limit, and fills settle at the CLEARING price (pay-as-cleared), not your limit. You don't see the clearing price before — only the desk forecast: today's price for the same hour, adjusted by how much residual load (demand − wind − solar) changes tomorrow × the merit-order slope fitted on today. Hover a row for the breakdown; after clearing, hover the result to see why the forecast was off. On real Elexon days the actual price is the Market Index Price (MID) as DA proxy." />
+          <HelpIcon text="Blind, uniform-price auction for the next delivery day (EPEX GB 09:20 UK style, HOURLY products). Per hour you can bid to BUY (charge) up to a max price and/or SELL (discharge) down to a min price — a 2-step bid curve. At gate closure the auction clears: an order fills only if the clearing price meets its limit, and fills settle at the CLEARING price (pay-as-cleared), not your limit. You don't see the clearing price before — only the desk forecast, made earlier by your price model. Since then the market moved: read the SIGNALS (gas, wind revision, temperature, news) to judge which way the forecast is likely wrong in each hour, and set your limits accordingly. After clearing, hover the result to see the forecast error split by cause. On real Elexon days the actual price is the Market Index Price (MID) as DA proxy." />
           <span className="da-delivery-badge">
             Delivery <strong>{formatDeliveryDay(deliveryDay)}</strong> · {sourceLabel}
           </span>
@@ -276,7 +284,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
               </h4>
               <div className="da-chart-legend inline">
                 <span className="legend-item"><span className="legend-bar da-bar" /> Forecast</span>
-                {model && <span className="legend-item"><span className="legend-line" style={{ borderTop: '2px dashed #8b95a8', height: 0 }} /> Today's DA</span>}
+                <span className="legend-item"><span className="legend-line" style={{ borderTop: '2px dashed #8b95a8', height: 0 }} /> Today's DA</span>
                 {!isAuctionOpen && <span className="legend-item"><span className="legend-line id-line" /> Clearing</span>}
                 <span className="legend-item"><span className="legend-line soc-line" /> SoC%</span>
               </div>
@@ -300,7 +308,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
                     <Cell key={i} fill={e.isLow ? '#007be2' : e.isHigh ? '#ff874b' : '#9ca3af'} fillOpacity={hovered === i ? 1 : 0.6} />
                   ))}
                 </Bar>
-                {model && <Line yAxisId="price" type="monotone" dataKey="todayDa" stroke="#8b95a8" strokeWidth={1.5} strokeDasharray="4 3" dot={false} name="Today's DA" isAnimationActive={false} />}
+                {<Line yAxisId="price" type="monotone" dataKey="todayDa" stroke="#8b95a8" strokeWidth={1.5} strokeDasharray="4 3" dot={false} name="Today's DA" isAnimationActive={false} />}
                 {!isAuctionOpen && <Line yAxisId="price" type="monotone" dataKey="clearing" stroke="#76b8ef" strokeWidth={2} dot={{ r: 2 }} name="Clearing" isAnimationActive={false} />}
                 <Line yAxisId="soc" type="stepAfter" dataKey="socPct" stroke="#c7b4f8" strokeWidth={2} dot={false} name="Projected SoC" isAnimationActive={false} />
               </ComposedChart>
@@ -316,11 +324,6 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
               <div className="da-status-sub">
                 {isAuctionOpen ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left` : 'Positions are locked · trade adjustments intraday'}
               </div>
-              {model && (
-                <div className="da-status-sub">
-                  Desk model: today's price + £{beta.toFixed(1)}/GW × Δ residual load
-                </div>
-              )}
               <div className="da-status-sub">
                 {submittedBids.length} order{submittedBids.length === 1 ? '' : 's'} submitted
                 {justSubmitted && !isDirty && <span className="da-submitted"> <CheckCircle size={12} /> sent</span>}
@@ -351,6 +354,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
       </div>
 
       <div className="da-bid-section">
+        {sig && <DeskSignalsPanel signals={sig} avgPrice={forecast.reduce((x, y) => x + Math.abs(y), 0) / DA_HOURS} />}
         {!isAuctionOpen && (
           <div className="da-gate-warning">
             Gate closed — the auction has cleared for {formatDeliveryDay(deliveryDay)}. Adjust positions in the Intraday market (tomorrow's products are now open there). The next auction opens after midnight.
@@ -361,9 +365,9 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
             <thead>
               <tr>
                 <th>Hour</th>
-                <th title="Today's cleared DA price for the same hour — the forecast's reference">Today £</th>
-                <th title="Change in residual load (demand − wind − solar) vs today, and its price effect">Δ res. load</th>
+                <th title="Today's cleared DA price for the same hour (context)">Today £</th>
                 <th>Forecast</th>
+                <th title="Signals that changed since the desk model ran and which way they push this hour's price. Hover a chip for details.">Signals</th>
                 <th>Buy MW</th>
                 <th>Max £</th>
                 <th>Sell MW</th>
@@ -385,11 +389,13 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
                     onMouseLeave={() => setHovered(null)}
                   >
                     <td>{hourLabel(h)}</td>
-                    <td className="muted">{model ? `£${refH[h].toFixed(2)}` : '—'}</td>
-                    <td className="muted" title={model ? driverText(h) : 'No driver forecasts — persistence forecast'} style={{ cursor: 'help' }}>
-                      {model ? <>{gw(dRl(h))} <small>({pounds(beta * dRl(h) / 1000)})</small></> : '—'}
+                    <td className="muted">{todayH[h] ? `£${todayH[h].toFixed(2)}` : '—'}</td>
+                    <td>£{f.toFixed(2)}</td>
+                    <td className="da-chips">
+                      {chipsFor(h).map((c, i) => (
+                        <span key={i} className={`da-chip ${c.dir}`} title={c.title}>{c.label} {c.dir === 'up' ? '↑' : '↓'}</span>
+                      ))}
                     </td>
-                    <td title={model ? driverText(h) : undefined}>£{f.toFixed(2)}</td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.buyMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyMw', e.target.value)} placeholder="" /></td>
                     <td><input className="input" type="number" step={0.5} value={d.buyPx} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyPx', e.target.value)} placeholder="—" /></td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.sellMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'sellMw', e.target.value)} placeholder="" /></td>
@@ -412,6 +418,70 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const hhmm = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
+
+/** What changed since the desk's price model ran — the trader's edge on the forecast. */
+function DeskSignalsPanel({ signals, avgPrice }: { signals: DeskSignals; avgPrice: number }) {
+  const { gasPct, windRevisionMw, tempAnomalyC, events } = signals;
+  // Strongest wind revision window (contiguous SPs with the same sign and |rev| > 0.5 GW).
+  let best = { from: 0, to: -1, peak: 0 };
+  for (let i = 0; i < 48; i++) {
+    if (Math.abs(windRevisionMw[i]) < 500) continue;
+    let j = i, peak = 0;
+    while (j < 48 && Math.abs(windRevisionMw[j]) >= 500 && Math.sign(windRevisionMw[j]) === Math.sign(windRevisionMw[i])) {
+      if (Math.abs(windRevisionMw[j]) > Math.abs(peak)) peak = windRevisionMw[j];
+      j++;
+    }
+    if (Math.abs(peak) > Math.abs(best.peak)) best = { from: i, to: j - 1, peak };
+    i = j;
+  }
+  const gasRule = 0.01 * RULES.gasShare(30) * avgPrice;
+  const tempRule = RULES.demandPerDegree * RULES.meritSlope;
+  const arrow = (up: boolean) => <span className={`da-chip ${up ? 'up' : 'down'}`}>{up ? 'prices ↑' : 'prices ↓'}</span>;
+  return (
+    <div className="da-signals">
+      <div className="da-signals-head">
+        Market signals since your desk model ran
+        <HelpIcon text="Your forecast was produced earlier this morning. These are the changes since then. Each one pushes the actual auction price away from your forecast — use them to decide where to bid more aggressively or cautiously. Signals are measured with some noise, news can be wrong, and part of the error is unexplainable. (Signals are simulated, also on real-data days.)" />
+      </div>
+      <div className="da-signal-grid">
+        <div className="da-signal">
+          <div className="da-signal-label">Gas (NBP day-ahead)</div>
+          <div className="da-signal-value">{gasPct > 0 ? '+' : ''}{gasPct.toFixed(1)}% <small>overnight</small> {Math.abs(gasPct) >= 1 && arrow(gasPct > 0)}</div>
+          <div className="da-signal-rule">+1% gas ≈ +£{gasRule.toFixed(1)}/MWh when gas sets the price (day & peak)</div>
+        </div>
+        <div className="da-signal">
+          <div className="da-signal-label">Wind · latest weather run vs model</div>
+          <div className="da-signal-value">
+            {best.to >= best.from
+              ? <>{best.peak > 0 ? '+' : '−'}{Math.abs(best.peak / 1000).toFixed(1)} GW <small>{hhmm(best.from)}–{hhmm(best.to + 1)}</small> {arrow(best.peak < 0)}</>
+              : <>no material change</>}
+          </div>
+          <div className="da-signal-rule">+1 GW wind ≈ −£{RULES.meritSlope.toFixed(0)}/MWh (cheaper plant on the margin) · per-hour in the table</div>
+        </div>
+        <div className="da-signal">
+          <div className="da-signal-label">Temperature vs normal</div>
+          <div className="da-signal-value">{tempAnomalyC > 0 ? '+' : ''}{tempAnomalyC.toFixed(1)}°C {Math.abs(tempAnomalyC) >= 0.8 && arrow(tempAnomalyC < 0)}</div>
+          <div className="da-signal-rule">1°C colder ≈ +{RULES.demandPerDegree} GW demand ≈ +£{tempRule.toFixed(0)}/MWh, more at the evening peak</div>
+        </div>
+        <div className="da-signal">
+          <div className="da-signal-label">News · REMIT / interconnectors</div>
+          {events.length === 0 ? <div className="da-signal-value"><small>nothing relevant</small></div> : (
+            <ul className="da-news">
+              {events.map((e, i) => (
+                <li key={i}>
+                  <span className={`da-news-tag ${e.confirmed ? 'confirmed' : ''}`}>{e.confirmed ? 'confirmed' : 'unconfirmed'}</span> {e.headline}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="da-signal-rule">Lost imports / outages lift prices in that window; extra imports lower them</div>
         </div>
       </div>
     </div>

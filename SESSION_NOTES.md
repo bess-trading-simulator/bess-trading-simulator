@@ -447,3 +447,21 @@ D+1 intraday products see it). At midnight nextDay becomes today.
   / `todayResults` carried over at midnight.
 - Fixed: chart data key named `ref` crashed React (Recharts passes data fields as props).
 - Old autosaves without `nextDay.forecastModel` are discarded. 44 tests green.
+
+## S4.6 DA forecast = actual − causal errors, with desk signals (2026-10-08)
+Replaces the fundamental (yesterday + β·ΔRL) forecast, which was too inaccurate on
+real days (linear merit order vs a convex reality).
+- `marketDay.ts › withDeskForecast(day, seed)`: actual price stays the truth (real MID or
+  simulated); forecast = actual − (gas + wind revision + temperature + events + noise).
+  Gas: N(0,4%) × gas share (0.9 day/peak, 0.6 night) × |price|; wind: AR(1) revision
+  per SP × −£5/GW; temperature: N(0,1.5°C) × 0.6 GW/°C × £5/GW (×1.4 evening peak);
+  events (~42 % of days): interconnector cut / CCGT outage (↑) or extra imports (↓) over
+  a window, confirmed or not; plus a 15 % unconfirmed false alarm with no effect.
+- `MarketDay.signals` (visible, noisy) and `forecastErrors` (revealed after clearing).
+  `RULES` exports the rules of thumb shown in the UI.
+- `nextDayFrom` still simulates next days (price follows residual load) and now adds
+  the desk forecast. Real days get it in `loadMarketDays` / `replaceNextDay`.
+- DA auction view: signal panel (gas, wind window, temperature, news with
+  confirmed/unconfirmed), per-hour signal chips (↑ orange / ↓ blue), "Today £" column
+  for context; after clearing the result tooltip splits the forecast error by cause.
+- Signals are simulated on real-data days too (labelled in the help text).
