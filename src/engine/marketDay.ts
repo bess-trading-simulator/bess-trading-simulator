@@ -50,6 +50,22 @@ const spTime = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:$
 
 const INTERCONNECTORS = ['IFA', 'IFA2', 'BritNed', 'NSL', 'Nemo', 'ElecLink', 'Viking'];
 
+function eventHeadline(kind: DeskEvent['kind'], startSp: number, endSp: number, rng: () => number): string {
+  const when = `${spTime(startSp)}–${spTime(endSp + 1)}`;
+  if (kind === 'interconnector') {
+    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
+    return `${ic} interconnector: import capacity cut ${when}`;
+  }
+  if (kind === 'outage') return `CCGT unit tripped / unavailable ${when}`;
+  return `Continental prices low: higher GB imports expected ${when}`;
+}
+
+/**
+ * News the desk sees before gate closure. Real events are usually confirmed
+ * (a REMIT UMM / operator notice) but some are still unconfirmed; false alarms
+ * are always unconfirmed and look exactly like real news — so an unconfirmed
+ * item is genuinely uncertain (≈ 50 % real in this model).
+ */
 function makeEvents(rng: () => number, prices: number[]): DeskEvent[] {
   const events: DeskEvent[] = [];
   const window = () => {
@@ -57,30 +73,18 @@ function makeEvents(rng: () => number, prices: number[]): DeskEvent[] {
     return { startSp: start, endSp: Math.min(47, start + 3 + Math.floor(rng() * 9)) };
   };
   const level = Math.max(30, prices.reduce((a, b) => a + Math.abs(b), 0) / prices.length);
+  const add = (kind: DeskEvent['kind'], confirmed: boolean, effect: number) => {
+    const w = window();
+    events.push({ kind, ...w, confirmed, headline: eventHeadline(kind, w.startSp, w.endSp, rng), effect: round2(effect) });
+  };
   const r = rng();
-  if (r < 0.25) {
-    const w = window();
-    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
-    events.push({ kind: 'interconnector', ...w, confirmed: rng() < 0.8,
-      headline: `${ic} interconnector: import capacity cut ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
-      effect: round2(level * (0.15 + rng() * 0.25)) });
-  } else if (r < 0.45) {
-    const w = window();
-    events.push({ kind: 'outage', ...w, confirmed: rng() < 0.75,
-      headline: `CCGT unit tripped / unavailable ${spTime(w.startSp)}–${spTime(w.endSp + 1)} (REMIT)`,
-      effect: round2(level * (0.12 + rng() * 0.2)) });
-  } else if (r < 0.57) {
-    const w = window();
-    events.push({ kind: 'imports', ...w, confirmed: rng() < 0.7,
-      headline: `Continental prices low: higher GB imports expected ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
-      effect: -round2(level * (0.08 + rng() * 0.14)) });
-  }
-  // False alarm: plausible headline, no effect, always unconfirmed.
+  if (r < 0.25) add('interconnector', rng() < 0.8, level * (0.15 + rng() * 0.25));
+  else if (r < 0.45) add('outage', rng() < 0.75, level * (0.12 + rng() * 0.2));
+  else if (r < 0.57) add('imports', rng() < 0.7, -level * (0.08 + rng() * 0.14));
+  // False alarm: indistinguishable headline, no price effect, always unconfirmed.
   if (rng() < 0.15) {
-    const w = window();
-    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
-    events.push({ kind: 'interconnector', ...w, confirmed: false,
-      headline: `Rumour: ${ic} trip risk ${spTime(w.startSp)}–${spTime(w.endSp + 1)} (unconfirmed)`, effect: 0 });
+    const k = rng();
+    add(k < 0.5 ? 'interconnector' : k < 0.85 ? 'outage' : 'imports', false, 0);
   }
   return events;
 }

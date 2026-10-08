@@ -510,7 +510,13 @@ function DeskSignalsPanel({ signals, avgPrice }: { signals: DeskSignals; avgPric
             <ul className="da-news">
               {events.map((e, i) => (
                 <li key={i}>
-                  <span className={`da-news-tag ${e.confirmed ? 'confirmed' : ''}`}>{e.confirmed ? 'confirmed' : 'unconfirmed'}</span> {e.headline}
+                  <span
+                    className={`da-news-tag ${e.confirmed ? 'confirmed' : ''}`}
+                    title={e.confirmed
+                      ? 'Confirmed: published as a REMIT Urgent Market Message (UMM) / operator notice — it will happen.'
+                      : 'Unconfirmed: market chatter, not (yet) backed by a REMIT UMM. Might happen, might not — roughly half of these turn out real. Price it in partially, or wait and risk the better price.'}
+                    style={{ cursor: 'help' }}
+                  >{e.confirmed ? 'confirmed' : 'unconfirmed'}</span> {e.headline}
                 </li>
               ))}
             </ul>

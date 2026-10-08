@@ -36,13 +36,19 @@ describe('desk forecast = actual − causal errors', () => {
     expect(gasAgree / gasN).toBeGreaterThan(0.9);
   });
 
-  it('false alarms are unconfirmed and have no price effect', () => {
-    for (let seed = 0; seed < 300; seed++) {
+  it('false alarms are unconfirmed, have no price effect and look like real news', () => {
+    let unconfirmed = 0, unconfirmedReal = 0;
+    for (let seed = 0; seed < 2000; seed++) {
       for (const ev of withDeskForecast(base, seed).signals!.events) {
         if (ev.effect === 0) expect(ev.confirmed).toBe(false);
+        expect(ev.headline).not.toMatch(/rumou?r|unconfirmed|REMIT/i);
         expect(ev.endSp).toBeGreaterThanOrEqual(ev.startSp);
+        if (!ev.confirmed) { unconfirmed++; if (ev.effect !== 0) unconfirmedReal++; }
       }
     }
+    // An unconfirmed item is a genuine coin flip-ish (≈ 50 % real)
+    expect(unconfirmedReal / unconfirmed).toBeGreaterThan(0.35);
+    expect(unconfirmedReal / unconfirmed).toBeLessThan(0.65);
   });
 
   it('simulated next days come with signals and a forecast that differs from the actual', () => {
