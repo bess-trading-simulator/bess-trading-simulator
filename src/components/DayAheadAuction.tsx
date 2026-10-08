@@ -64,6 +64,13 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
 
   // Re-sync the editor when the auction day changes (new auction after midnight).
   const [syncedDay, setSyncedDay] = useState(deliveryDay);
+  // After Submit, mirror exactly what the engine accepted (it may trim orders).
+  const [awaitingSync, setAwaitingSync] = useState(false);
+  if (awaitingSync) {
+    setAwaitingSync(false);
+    setDraft(draftFromBids(submittedBids));
+    setDraftBlocks(submittedBlocks);
+  }
   if (syncedDay !== deliveryDay) {
     setSyncedDay(deliveryDay);
     setDraft(draftFromBids(submittedBids));
@@ -122,7 +129,15 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   const blockKey = (bs: DaBlockOrder[]) => bs.map(b => `${b.id}|${b.side}|${b.startSp}|${b.endSp}|${b.volumeMw}|${b.price}|${b.parentId ?? ''}`).sort().join(';');
   const isDirty = orderKey(draftBids) !== orderKey(submittedBids) || blockKey(draftBlocks) !== blockKey(submittedBlocks);
   // Single orders + blocks together may not exceed the power rating in any SP.
-  const violations = powerViolations(hourlyToSp(sanitizeBids(draftBids, P)), draftBlocks, P);
+  const crossing = Array.from({ length: DA_HOURS }, (_, h) => {
+    const buy = draftBids.find(b => b.hour === h && b.side === OrderSide.BUY);
+    const sell = draftBids.find(b => b.hour === h && b.side === OrderSide.SELL);
+    return buy && sell && buy.price >= sell.price ? `${hourLabel(h)}: max £${buy.price} ≥ min £${sell.price}` : null;
+  }).filter((x): x is string => x !== null);
+  const violations = [
+    ...powerViolations(hourlyToSp(sanitizeBids(draftBids, P)), draftBlocks, P),
+    ...crossing.map(c => `crossing curve ${c} (buy max must be below sell min)`),
+  ];
   const draftCount = draftBids.length + draftBlocks.length;
   const submittedCount = submittedBids.length + submittedBlocks.length;
 
@@ -144,13 +159,17 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   // deliver whatever clears, so feasibility is judged on that.
   const hourNet: number[] = Array.from({ length: DA_HOURS }, (_, h) => {
     if (!isAuctionOpen) {
+      // The HOURLY auction's result only (30-min fills come later and are shown in their own view).
+      const hourlyCutoff = dayAhead.hhGateClosureTime ?? Infinity;
       return playerSchedule
-        .filter(p => p.deliveryDay === deliveryDay && p.market === 'da' && p.period === 2 * h)
-        .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0);
+        .filter(p => p.deliveryDay === deliveryDay && p.market === 'da' && (p.period === 2 * h || p.period === 2 * h + 1) && p.lockedAt < hourlyCutoff)
+        .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0) / 2;
     }
-    return draftBids
-      .filter(b => b.hour === h)
-      .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0);
+    // Before clearing: assume orders fill. With a buy AND a sell in the same
+    // hour (max < min) only one leg can fill — use the one that fills at the forecast.
+    const legs = draftBids.filter(b => b.hour === h);
+    const used = legs.length > 1 ? legs.filter(b => bidFills(b, forecast[h])) : legs;
+    return used.reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0);
   });
 
   // Hourly blocks (before clearing): assumed filled for feasibility, filled at
@@ -224,7 +243,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
     onWithdrawBids?.();
     onSubmitBids(clean);
     onSetBlocks?.('hourly', draftBlocks); // single orders and blocks go in together
-    setDraft(draftFromBids(clean)); // editor shows exactly what was submitted
+    setAwaitingSync(true);
     setJustSubmitted(true);
   };
 
@@ -377,12 +396,12 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
                   disabled={!isDirty || violations.length > 0}
                 >
                   {violations.length
-                    ? 'Over power limit — fix first'
+                    ? 'Fix orders first'
                     : isDirty ? `Submit ${draftCount} order${draftCount === 1 ? '' : 's'}${draftBlocks.length ? ` (${draftBlocks.length} block${draftBlocks.length === 1 ? '' : 's'})` : ''}` : submittedCount ? 'Orders up to date' : 'No orders yet'}
                 </button>
                 {violations.length > 0 && (
                   <div className="da-power-warning negative">
-                    Orders + blocks exceed {P} MW: {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
+                    {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
                   </div>
                 )}
               </>
@@ -566,8 +585,9 @@ export default function DayAheadAuction(props: Props) {
           Today · delivery {formatDeliveryDay(today)}
         </button>
       </div>
-      {view === 'auction' && <AuctionView {...props} />}
-      {view === 'half' && (
+      {/* Views stay mounted (hidden) so unsent drafts survive switching */}
+      <div style={view === 'auction' ? undefined : { display: 'none' }}><AuctionView {...props} /></div>
+      <div style={view === 'half' ? undefined : { display: 'none' }}>
         <DayAheadHalfHour
           dayAhead={d}
           nextDay={props.nextDay}
@@ -576,7 +596,7 @@ export default function DayAheadAuction(props: Props) {
           onSubmitHalfHourBids={props.onSubmitHalfHourBids}
           onSetBlocks={props.onSetBlocks}
         />
-      )}
+      </div>
       {view === 'today' && <DayAheadToday dayAhead={d} ledger={props.ledger ?? []} battery={props.battery} currentTime={props.currentTime} />}
     </div>
   );

@@ -312,3 +312,26 @@ describe('submitting blocks together with single orders', () => {
     expect(s.dayAhead.blocks).toHaveLength(0); // parent no longer in the list → orphan child dropped
   });
 });
+
+describe('power limit across DA auctions and D+1 intraday', () => {
+  it('intraday D+1 room counts pending 30-min orders', () => {
+    let s = step(fresh(), 18);
+    s = submitHalfHourBidsAction(s, [{ sp: 10, side: OrderSide.BUY, volumeMw: 50, price: 1000 }]);
+    s = placeIntradayOrderAction(s, { deliveryDay: D0 + DAY, period: 10, side: OrderSide.BUY, type: 'market', qtyMw: 30 });
+    expect(s.intraday.orders.at(-1)!.status).toBe('rejected');
+  });
+
+  it('30-min orders count working intraday orders and submitted 30-min blocks', () => {
+    let s = step(fresh(), 18);
+    s = setBlockOrdersAction(s, 'half', [{ id: 'Q', auction: 'half', side: OrderSide.SELL, startSp: 30, endSp: 33, volumeMw: 40, price: 0 }]);
+    s = submitHalfHourBidsAction(s, [{ sp: 31, side: OrderSide.SELL, volumeMw: 20, price: 0 }]); // 40 + 20 > 50
+    expect(s.dayAhead.hhBids).toHaveLength(0);
+  });
+
+  it('hourly orders submitted after blocks are checked against them', () => {
+    let s = fresh();
+    s = setBlockOrdersAction(s, 'hourly', [{ id: 'A', auction: 'hourly', side: OrderSide.BUY, startSp: 4, endSp: 7, volumeMw: 50, price: 1000 }]);
+    s = submitDayAheadBids(s, [{ hour: 2, side: OrderSide.BUY, volumeMw: 50, price: 1000 }]);
+    expect(s.dayAhead.bids).toHaveLength(0);
+  });
+});

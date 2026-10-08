@@ -253,8 +253,9 @@ export default function App() {
           </div>
         )}
 
-        {view === 'dayahead' && (
-          <div className="grid-main-full">
+        {/* Kept mounted while hidden so unsent order drafts survive tab switches */}
+        {visibleTabs.includes('dayahead') && (
+          <div className="grid-main-full" style={view === 'dayahead' ? undefined : { display: 'none' }}>
             <DayAheadAuction
               dayAhead={state.dayAhead}
               nextDay={state.nextDay}

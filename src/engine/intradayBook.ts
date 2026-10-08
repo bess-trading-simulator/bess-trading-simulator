@@ -133,16 +133,35 @@ export function netPositionMw(state: GameState, day: number, sp: number): number
     .reduce((acc, p) => acc + (p.action === 'discharge' ? p.mw : -p.mw), 0);
 }
 
-/** Room for a new order in MW given the power rating, contracts and working orders on that side. */
-export function orderRoomMw(state: GameState, day: number, sp: number, side: OrderSide): number {
-  const p = state.battery.config.powerRatingMw;
-  const net = netPositionMw(state, day, sp);
-  const working = state.intraday.orders
+/** MW of working (resting) intraday orders on one side of a product. */
+export function workingIdMw(state: GameState, day: number, sp: number, side: OrderSide): number {
+  return state.intraday.orders
     .filter((o) => o.status === 'working' || o.status === 'partial')
     .filter((o) => o.deliveryDay === day && o.period === sp && o.side === side)
     .reduce((a, o) => a + (o.qtyMw - o.filledMw), 0);
+}
+
+/** MW still pending in the open 30-min DA auction (orders + blocks) for one side of an SP. */
+function pendingHalfHourMw(state: GameState, day: number, sp: number, side: OrderSide): number {
+  const d = state.dayAhead;
+  if (!d.hhAuctionOpen || day !== d.deliveryDay) return 0;
+  const bids = (d.hhBids ?? []).filter((b) => b.sp === sp && b.side === side).reduce((a, b) => a + b.volumeMw, 0);
+  const blocks = (d.blocks ?? []).filter((b) => b.auction === 'half' && b.side === side && sp >= b.startSp && sp <= b.endSp)
+    .reduce((a, b) => a + b.volumeMw, 0);
+  return bids + blocks;
+}
+
+/**
+ * Room for a new order in MW given the power rating, contracts, working
+ * intraday orders and orders still pending in the 30-min DA auction — every
+ * one of them could fill, so all of them count against the limit.
+ */
+export function orderRoomMw(state: GameState, day: number, sp: number, side: OrderSide): number {
+  const p = state.battery.config.powerRatingMw;
+  const net = netPositionMw(state, day, sp);
+  const reserved = workingIdMw(state, day, sp, side) + pendingHalfHourMw(state, day, sp, side);
   const room = side === OrderSide.SELL ? p - net : p + net;
-  return Math.max(0, round1(room - working));
+  return Math.max(0, round1(room - reserved));
 }
 
 interface FillResult { fills: { mw: number; price: number }[]; filled: number }

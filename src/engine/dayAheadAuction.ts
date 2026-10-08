@@ -225,8 +225,14 @@ export function buildHalfHourForecast(day: MarketDay, seed: number): number[] {
  * not exceed the power rating. `netBySp` is the position already held from the
  * hourly auction (+ = sell): with 50 MW sold you may buy back up to 100 MW.
  */
-export function sanitizeHalfHourBids(bids: HalfHourBid[], powerMw: number, netBySp: number[] = []): HalfHourBid[] {
-  const used: Record<string, number> = {};
+export function sanitizeHalfHourBids(
+  bids: HalfHourBid[],
+  powerMw: number,
+  netBySp: number[] = [],
+  /** MW already reserved per `${sp}:${side}` (e.g. working intraday orders that may still fill) */
+  reserved: Record<string, number> = {},
+): HalfHourBid[] {
+  const used: Record<string, number> = { ...reserved };
   const out: HalfHourBid[] = [];
   for (const b of bids) {
     if (!Number.isInteger(b.sp) || b.sp < 0 || b.sp > 47) continue;

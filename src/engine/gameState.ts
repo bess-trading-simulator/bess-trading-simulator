@@ -12,7 +12,7 @@ import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
-import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
+import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
 
 interface InternalState extends GameState {
@@ -339,8 +339,15 @@ export function dischargeBatteryAction(state: GameState, mw: number): GameState 
 export function submitDayAheadBids(state: GameState, bids: DayAheadBid[]): GameState {
   const { isAuctionOpen, gateClosureTime } = state.dayAhead;
   if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
-  const all = sanitizeBids([...state.dayAhead.bids, ...bids], state.battery.config.powerRatingMw);
-  return { ...state, dayAhead: { ...state.dayAhead, bids: all } };
+  const P = state.battery.config.powerRatingMw;
+  // Single orders may not push any SP beyond the power rating together with
+  // the hourly blocks already submitted.
+  const blocks = (state.dayAhead.blocks ?? []).filter(b => b.auction === 'hourly');
+  const kept: DayAheadBid[] = [];
+  for (const b of sanitizeBids([...state.dayAhead.bids, ...bids], P)) {
+    if (powerViolations(hourlyToSp([...kept, b]), blocks, P).length === 0) kept.push(b);
+  }
+  return { ...state, dayAhead: { ...state.dayAhead, bids: kept } };
 }
 
 function auctionOpen(state: GameState, auction: 'hourly' | 'half'): boolean {
@@ -356,8 +363,9 @@ export function submitBlockOrderAction(state: GameState, input: Omit<DaBlockOrde
   if (!auctionOpen(state, input.auction)) return state;
   const existing = state.dayAhead.blocks ?? [];
   if (validateBlock(input, existing, state.battery.config.powerRatingMw)) return state;
-  const n = existing.length + 1;
-  const id = `${input.auction === 'hourly' ? 'BH' : 'BQ'}${n}-${state.clock.currentTime % 100000}`;
+  const prefix = input.auction === 'hourly' ? 'BH' : 'BQ';
+  const used = existing.map(b => Number(b.id.replace(prefix, ''))).filter(Number.isFinite);
+  const id = `${prefix}${Math.max(0, ...used) + 1}`;
   return { ...state, dayAhead: { ...state.dayAhead, blocks: [...existing, { ...input, id }] } };
 }
 
@@ -376,6 +384,19 @@ function deliveryDayNet(state: GameState): number[] {
     .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0));
 }
 
+/** Working intraday orders for the auction's delivery day, as per-SP volumes (they may still fill). */
+function workingIdOrders(state: GameState): { sp: number; side: OrderSide; volumeMw: number }[] {
+  const day = state.dayAhead.deliveryDay;
+  const out: { sp: number; side: OrderSide; volumeMw: number }[] = [];
+  for (let sp = 0; sp < 48; sp++) {
+    for (const side of [OrderSide.BUY, OrderSide.SELL]) {
+      const mw = workingIdMw(state, day, sp, side);
+      if (mw > 0) out.push({ sp, side, volumeMw: mw });
+    }
+  }
+  return out;
+}
+
 /**
  * Set the full list of block orders for one auction (submitted together with
  * the auction's single orders). Blocks are validated in order — parents must
@@ -386,7 +407,9 @@ export function setBlockOrdersAction(state: GameState, auction: 'hourly' | 'half
   if (!auctionOpen(state, auction)) return state;
   const P = state.battery.config.powerRatingMw;
   const others = (state.dayAhead.blocks ?? []).filter(b => b.auction !== auction);
-  const singles = auction === 'hourly' ? hourlyToSp(state.dayAhead.bids) : (state.dayAhead.hhBids ?? []);
+  const singles = auction === 'hourly'
+    ? hourlyToSp(state.dayAhead.bids)
+    : [...(state.dayAhead.hhBids ?? []), ...workingIdOrders(state)];
   const net = auction === 'half' ? deliveryDayNet(state) : [];
   const kept: DaBlockOrder[] = [];
   for (const b of blocks) {
@@ -401,7 +424,16 @@ export function setBlockOrdersAction(state: GameState, auction: 'hourly' | 'half
 /** Replace your orders in the 30-min auction (open between 09:20 results and 15:30 UK). */
 export function submitHalfHourBidsAction(state: GameState, bids: HalfHourBid[]): GameState {
   if (!auctionOpen(state, 'half')) return state;
-  return { ...state, dayAhead: { ...state.dayAhead, hhBids: sanitizeHalfHourBids(bids, state.battery.config.powerRatingMw, deliveryDayNet(state)) } };
+  const reserved: Record<string, number> = {};
+  for (const o of workingIdOrders(state)) reserved[`${o.sp}:${o.side}`] = (reserved[`${o.sp}:${o.side}`] ?? 0) + o.volumeMw;
+  const P = state.battery.config.powerRatingMw;
+  const net = deliveryDayNet(state);
+  const halfBlocks = (state.dayAhead.blocks ?? []).filter(b => b.auction === 'half');
+  const kept: HalfHourBid[] = [];
+  for (const b of sanitizeHalfHourBids(bids, P, net, reserved)) {
+    if (powerViolations([...kept, b, ...workingIdOrders(state)], halfBlocks, P, net).length === 0) kept.push(b);
+  }
+  return { ...state, dayAhead: { ...state.dayAhead, hhBids: kept } };
 }
 
 /** Withdraw submitted DA orders (all, or those of one hour) before gate closure. */
