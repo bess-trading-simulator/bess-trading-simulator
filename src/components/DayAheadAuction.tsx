@@ -88,8 +88,9 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
     startSoc = Math.max(0, Math.min(capacity, startSoc));
   }
 
-  // Expected net MW per hour: after clearing the real positions; before, the
-  // draft orders assumed filled IF the forecast price meets their limits.
+  // Net MW per hour IF your orders fill: after clearing the real positions;
+  // before clearing every order is assumed filled — the battery must be able to
+  // deliver whatever clears, so feasibility is judged on that.
   const hourNet: number[] = Array.from({ length: DA_HOURS }, (_, h) => {
     if (!isAuctionOpen) {
       return playerSchedule
@@ -97,9 +98,17 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
         .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0);
     }
     return draftBids
-      .filter(b => b.hour === h && bidFills(b, forecast[h]))
+      .filter(b => b.hour === h)
       .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0);
   });
+
+  // Expected cash: only orders that would fill at the forecast price.
+  const expectedNet: number[] = Array.from({ length: DA_HOURS }, (_, h) => (
+    isAuctionOpen
+      ? draftBids.filter(b => b.hour === h && bidFills(b, forecast[h]))
+        .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0)
+      : hourNet[h]
+  ));
 
   // SoC path per hour (two SPs), flagging infeasible energy (→ imbalance).
   const socPct: number[] = [];
@@ -118,7 +127,7 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
   const priceFor = (h: number) => (isAuctionOpen ? forecast[h] : resultByHour.get(h)?.clearingPrice ?? forecast[h]);
   const chargeMwh = hourNet.reduce((a, n) => a + (n < 0 ? -n : 0), 0);
   const dischargeMwh = hourNet.reduce((a, n) => a + (n > 0 ? n : 0), 0);
-  const netCash = hourNet.reduce((a, n, h) => a + n * priceFor(h), 0);
+  const netCash = expectedNet.reduce((a, n, h) => a + n * priceFor(h), 0);
 
   const chartData = forecast.map((f, h) => ({
     hour: `${String(h).padStart(2, '0')}:00`,
@@ -134,8 +143,8 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
     setDraft(prev => {
       const d = { ...(prev[h] ?? EMPTY), [field]: value };
       // Volume entered without a limit → default limit at the forecast (a coin flip!).
-      if (field === 'buyMw' && value && !d.buyPx) d.buyPx = forecast[h].toFixed(1);
-      if (field === 'sellMw' && value && !d.sellPx) d.sellPx = forecast[h].toFixed(1);
+      if (field === 'buyMw' && value && !d.buyPx) d.buyPx = forecast[h].toFixed(2);
+      if (field === 'sellMw' && value && !d.sellPx) d.sellPx = forecast[h].toFixed(2);
       return { ...prev, [h]: d };
     });
   };
@@ -167,8 +176,8 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
     const sellMw = Math.min(P, Math.floor((startSoc + buyMw * k * eff) / k));
     const next: Record<number, Draft> = {};
     for (let i = 0; i < k; i++) {
-      if (buyMw > 0) next[best.c + i] = { ...EMPTY, buyMw: String(buyMw), buyPx: (forecast[best.c + i] + margin).toFixed(1) };
-      if (sellMw > 0) next[best.d + i] = { ...EMPTY, sellMw: String(sellMw), sellPx: (forecast[best.d + i] - margin).toFixed(1) };
+      if (buyMw > 0) next[best.c + i] = { ...EMPTY, buyMw: String(buyMw), buyPx: (forecast[best.c + i] + margin).toFixed(2) };
+      if (sellMw > 0) next[best.d + i] = { ...EMPTY, sellMw: String(sellMw), sellPx: (forecast[best.d + i] - margin).toFixed(2) };
     }
     setJustSubmitted(false);
     setDraft(next);
@@ -195,21 +204,21 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
                 {netCash >= 0 ? '+' : '−'}£{Math.abs(netCash).toFixed(0)}
               </span>
             </div>
-            <div className="kpi-sub">{isAuctionOpen ? 'if filled at forecast prices' : 'at clearing prices'}</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'orders that fill at forecast' : 'at clearing prices'}</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Charge</div>
             <div className="kpi-value-row">
               <span className="kpi-value" style={{ color: 'var(--charge)' }}>{chargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
             </div>
-            <div className="kpi-sub">{isAuctionOpen ? 'expected fills' : 'won in auction'}</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'if all orders fill' : 'won in auction'}</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Discharge</div>
             <div className="kpi-value-row">
               <span className="kpi-value" style={{ color: 'var(--discharge)' }}>{dischargeMwh.toFixed(0)}<span className="kpi-unit"> MWh</span></span>
             </div>
-            <div className="kpi-sub">{isAuctionOpen ? 'expected fills' : 'won in auction'}</div>
+            <div className="kpi-sub">{isAuctionOpen ? 'if all orders fill' : 'won in auction'}</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Energy feasibility</div>
@@ -230,7 +239,7 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
             <div className="da-forecast-head">
               <h4>
                 Hourly price · {isAuctionOpen ? 'desk forecast' : 'forecast vs clearing'}
-                <HelpIcon text="Bars = desk forecast per hourly product (blue = cheapest quarter, orange = dearest quarter). After gate closure the line shows the actual clearing price — compare to see your forecast error. Lavender = projected SoC." />
+                <HelpIcon text="Bars = desk forecast per hourly product (blue = cheapest quarter, orange = dearest quarter). After gate closure the line shows the actual clearing price — compare to see your forecast error. Lavender = projected SoC at the end of each hour, assuming all your orders fill." />
               </h4>
               <div className="da-chart-legend inline">
                 <span className="legend-item"><span className="legend-bar da-bar" /> Forecast</span>
@@ -334,7 +343,7 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
                     onMouseLeave={() => setHovered(null)}
                   >
                     <td>{hourLabel(h)}</td>
-                    <td className="muted">£{f.toFixed(1)}</td>
+                    <td className="muted">£{f.toFixed(2)}</td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.buyMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyMw', e.target.value)} placeholder="" /></td>
                     <td><input className="input" type="number" step={0.5} value={d.buyPx} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyPx', e.target.value)} placeholder="—" /></td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.sellMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'sellMw', e.target.value)} placeholder="" /></td>
