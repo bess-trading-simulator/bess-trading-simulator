@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createGameState, loadMarketDays, loadScenario, submitDayAheadBids, stepForwardAction,
   chargeBatteryAction, placeIntradayOrderAction, intradayChargeAction,
-  submitBlockOrderAction, submitHalfHourBidsAction,
+  submitBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
 } from './gameState';
 import { OrderSide } from './types';
 import type { GameState, MarketDay } from './types';
@@ -287,5 +287,28 @@ describe('EPEX GB 30-min auction (15:30 UK)', () => {
       { sp: 3, side: OrderSide.SELL, volumeMw: 80, price: 0 },   // can sell back up to 100
     ]);
     expect(s.dayAhead.hhBids).toEqual([{ sp: 3, side: OrderSide.SELL, volumeMw: 80, price: 0 }]);
+  });
+});
+
+describe('submitting blocks together with single orders', () => {
+  it('drops blocks that would push an SP beyond the power rating with the single orders', () => {
+    let s = fresh();
+    s = submitDayAheadBids(s, [{ hour: 1, side: OrderSide.BUY, volumeMw: 50, price: 180 }]);
+    s = setBlockOrdersAction(s, 'hourly', [
+      { id: 'A', auction: 'hourly', side: OrderSide.BUY, startSp: 2, endSp: 9, volumeMw: 50, price: 180 }, // overlaps hour 1 → 100 MW
+      { id: 'B', auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 50, price: 100 },
+    ]);
+    expect(s.dayAhead.blocks?.map(b => b.id)).toEqual(['B']);
+  });
+
+  it('keeps linked children only after their parent, and replaces the previous list', () => {
+    let s = fresh();
+    s = setBlockOrdersAction(s, 'hourly', [
+      { id: 'P', auction: 'hourly', side: OrderSide.BUY, startSp: 4, endSp: 7, volumeMw: 40, price: 60 },
+      { id: 'C', auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 40, price: 90, parentId: 'P' },
+    ]);
+    expect(s.dayAhead.blocks?.map(b => b.id)).toEqual(['P', 'C']);
+    s = setBlockOrdersAction(s, 'hourly', [{ id: 'C2', auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 40, price: 90, parentId: 'P' }]);
+    expect(s.dayAhead.blocks).toHaveLength(0); // parent no longer in the list → orphan child dropped
   });
 });

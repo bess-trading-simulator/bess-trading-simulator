@@ -7433,3 +7433,4 @@ body {
 .da-block-hint { grid-column: 1 / -1; }
 @media (max-width: 1100px) { .da-block-form { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .row-hh-second td { border-bottom: 1px solid var(--border); }
+.da-power-warning { font-size: 11px; margin-top: 6px; line-height: 1.35; }

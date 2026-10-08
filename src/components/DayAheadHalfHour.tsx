@@ -3,7 +3,7 @@ import type { DaBlockOrder, DayAheadState, HalfHourBid, MarketDay } from '../eng
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
-import { hourlyPrices, bidFills, sanitizeHalfHourBids } from '../engine/dayAheadAuction';
+import { hourlyPrices, bidFills, sanitizeHalfHourBids, powerViolations } from '../engine/dayAheadAuction';
 import { signedMw } from '../engine/settlement';
 import DaBlockOrders from './DaBlockOrders';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -16,8 +16,7 @@ interface Props {
   battery: BatteryState;
   currentTime: number;
   onSubmitHalfHourBids?: (bids: HalfHourBid[]) => void;
-  onSubmitBlock?: (block: Omit<DaBlockOrder, 'id'>) => void;
-  onCancelBlock?: (id: string) => void;
+  onSetBlocks?: (auction: 'hourly' | 'half', blocks: DaBlockOrder[]) => void;
 }
 
 type Draft = { buyMw: string; buyPx: string; sellMw: string; sellPx: string };
@@ -52,15 +51,17 @@ function fromDraft(draft: Record<number, Draft>): HalfHourBid[] {
  * re-shape it per half-hour (e.g. sell more in the dearer half of an hour, buy
  * back in the cheaper half).
  */
-export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTime, onSubmitHalfHourBids, onSubmitBlock, onCancelBlock }: Props) {
+export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTime, onSubmitHalfHourBids, onSetBlocks }: Props) {
   const isOpen = Boolean(dayAhead.hhAuctionOpen);
   const cleared = !dayAhead.isAuctionOpen && !isOpen;
   const pending = dayAhead.isAuctionOpen;
   const submitted = dayAhead.hhBids ?? [];
   const [draft, setDraft] = useState<Record<number, Draft>>(() => toDraft(submitted));
+  const submittedBlocks = (dayAhead.blocks ?? []).filter(b => b.auction === 'half');
+  const [draftBlocks, setDraftBlocks] = useState<DaBlockOrder[]>(() => submittedBlocks);
   const [sent, setSent] = useState(false);
   const [syncedDay, setSyncedDay] = useState(dayAhead.deliveryDay);
-  if (syncedDay !== dayAhead.deliveryDay) { setSyncedDay(dayAhead.deliveryDay); setDraft(toDraft(submitted)); }
+  if (syncedDay !== dayAhead.deliveryDay) { setSyncedDay(dayAhead.deliveryDay); setDraft(toDraft(submitted)); setDraftBlocks(submittedBlocks); }
 
   const P = battery.config.powerRatingMw;
   const cap = battery.config.capacityMwh;
@@ -80,10 +81,14 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
 
   const draftBids = fromDraft(draft);
   const key = (bids: HalfHourBid[]) => sanitizeHalfHourBids(bids, P, hourlyPos).map(b => `${b.sp}|${b.side}|${b.volumeMw}|${b.price.toFixed(2)}`).sort().join(';');
-  const dirty = key(draftBids) !== key(submitted);
+  const blockKey = (bs: DaBlockOrder[]) => bs.map(b => `${b.id}|${b.side}|${b.startSp}|${b.endSp}|${b.volumeMw}|${b.price}|${b.parentId ?? ''}`).sort().join(';');
+  const dirty = key(draftBids) !== key(submitted) || blockKey(draftBlocks) !== blockKey(submittedBlocks);
+  const violations = powerViolations(sanitizeHalfHourBids(draftBids, P, hourlyPos), draftBlocks, P, hourlyPos);
+  const draftCount = draftBids.length + draftBlocks.length;
+  const submittedCount = submitted.length + submittedBlocks.length;
 
   // Net per SP: hourly position + 30-min orders (assumed filled) + 30-min blocks.
-  const halfBlocks = (dayAhead.blocks ?? []).filter(b => b.auction === 'half');
+  const halfBlocks = isOpen ? draftBlocks : submittedBlocks;
   const totalNet = hourlyPos.map((n, sp) => {
     let v = n;
     if (!cleared) {
@@ -128,9 +133,10 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
   };
 
   const submit = () => {
-    if (!isOpen || !onSubmitHalfHourBids) return;
+    if (!isOpen || !onSubmitHalfHourBids || violations.length) return;
     const clean = sanitizeHalfHourBids(draftBids, P, hourlyPos);
     onSubmitHalfHourBids(clean);
+    onSetBlocks?.('half', draftBlocks);
     setDraft(toDraft(clean));
     setSent(true);
   };
@@ -246,7 +252,7 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
                 <span className={`da-status-dot ${isOpen ? 'open' : 'closed'}`} />
                 <span className="da-status-label">{pending ? 'Waiting for 09:20 results' : isOpen ? '30-min auction OPEN' : '30-min auction CLEARED'}</span>
               </div>
-              <div className="da-status-sub">{submitted.length} order{submitted.length === 1 ? '' : 's'} submitted {sent && !dirty && <span className="da-submitted"><CheckCircle size={12} /> sent</span>}</div>
+              <div className="da-status-sub">{submittedCount} order{submittedCount === 1 ? '' : 's'} submitted{submittedBlocks.length ? ` (${submittedBlocks.length} block${submittedBlocks.length === 1 ? '' : 's'})` : ''} {sent && !dirty && <span className="da-submitted"><CheckCircle size={12} /> sent</span>}</div>
             </div>
             {isOpen && (
               <>
@@ -256,11 +262,18 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
                 </h4>
                 <div className="da-quick-fill vertical">
                   <button className="btn btn-preset" onClick={presetShape}>Shape within hours</button>
-                  <button className="btn btn-preset" onClick={() => { setDraft({}); setSent(false); }}>Clear</button>
+                  <button className="btn btn-preset" onClick={() => { setDraft({}); setDraftBlocks([]); setSent(false); }}>Clear</button>
                 </div>
-                <button className={`btn btn-submit da-submit-inline ${dirty ? 'btn-buy' : ''}`} disabled={!dirty} onClick={submit}>
-                  {dirty ? `Submit ${draftBids.length} order${draftBids.length === 1 ? '' : 's'}` : submitted.length ? 'Orders up to date' : 'No orders yet'}
+                <button className={`btn btn-submit da-submit-inline ${dirty ? 'btn-buy' : ''}`} disabled={!dirty || violations.length > 0} onClick={submit}>
+                  {violations.length
+                    ? 'Over power limit — fix first'
+                    : dirty ? `Submit ${draftCount} order${draftCount === 1 ? '' : 's'}${draftBlocks.length ? ` (${draftBlocks.length} block${draftBlocks.length === 1 ? '' : 's'})` : ''}` : submittedCount ? 'Orders up to date' : 'No orders yet'}
                 </button>
+                {violations.length > 0 && (
+                  <div className="da-power-warning negative">
+                    Exceeds {P} MW incl. your hourly position: {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -271,13 +284,14 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
         {!pending && (
           <DaBlockOrders
             auction="half"
-            blocks={dayAhead.blocks ?? []}
+            blocks={isOpen ? draftBlocks : submittedBlocks}
+            submitted={submittedBlocks}
             results={dayAhead.blockResults ?? []}
             isOpen={isOpen}
             forecastBySp={fc}
             powerMw={P}
-            onSubmit={onSubmitBlock}
-            onCancel={onCancelBlock}
+            onAdd={b => { setDraftBlocks(prev => [...prev, b]); setSent(false); }}
+            onRemove={id => { setDraftBlocks(prev => prev.filter(b => b.id !== id && b.parentId !== id)); setSent(false); }}
           />
         )}
         {pending ? (

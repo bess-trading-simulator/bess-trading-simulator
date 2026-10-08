@@ -6,7 +6,7 @@ import DayAheadToday from './DayAheadToday';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
-import { DA_HOURS, hourlyPrices, bidFills, sanitizeBids } from '../engine/dayAheadAuction';
+import { DA_HOURS, hourlyPrices, bidFills, sanitizeBids, powerViolations, hourlyToSp } from '../engine/dayAheadAuction';
 import { RULES } from '../engine/marketDay';
 import type { DeskSignals } from '../engine/types';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -21,8 +21,8 @@ interface Props {
   battery: BatteryState;
   onSubmitBids: (bids: DayAheadBid[]) => void;
   onWithdrawBids?: (hour?: number) => void;
-  onSubmitBlock?: (block: Omit<DaBlockOrder, 'id'>) => void;
-  onCancelBlock?: (id: string) => void;
+  /** Set the full block list of one auction (sent together with its orders) */
+  onSetBlocks?: (auction: 'hourly' | 'half', blocks: DaBlockOrder[]) => void;
   onSubmitHalfHourBids?: (bids: HalfHourBid[]) => void;
 }
 
@@ -54,9 +54,11 @@ function bidsFromDraft(draft: Record<number, Draft>): DayAheadBid[] {
   return bids;
 }
 
-function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids, onSubmitBlock, onCancelBlock }: Props) {
+function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids, onSetBlocks }: Props) {
   const { isAuctionOpen, results, playerSchedule, deliveryDay, bids: submittedBids } = dayAhead;
   const [draft, setDraft] = useState<Record<number, Draft>>(() => draftFromBids(submittedBids));
+  const submittedBlocks = (dayAhead.blocks ?? []).filter(b => b.auction === 'hourly');
+  const [draftBlocks, setDraftBlocks] = useState<DaBlockOrder[]>(() => submittedBlocks);
   const [justSubmitted, setJustSubmitted] = useState(false);
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -65,6 +67,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   if (syncedDay !== deliveryDay) {
     setSyncedDay(deliveryDay);
     setDraft(draftFromBids(submittedBids));
+    setDraftBlocks(submittedBlocks);
   }
 
   const P = battery.config.powerRatingMw;
@@ -116,7 +119,12 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   // validation the engine applies.
   const orderKey = (bids: DayAheadBid[]) => sanitizeBids(bids, battery.config.powerRatingMw)
     .map(b => `${b.hour}|${b.side}|${b.volumeMw}|${b.price.toFixed(2)}`).sort().join(';');
-  const isDirty = orderKey(draftBids) !== orderKey(submittedBids);
+  const blockKey = (bs: DaBlockOrder[]) => bs.map(b => `${b.id}|${b.side}|${b.startSp}|${b.endSp}|${b.volumeMw}|${b.price}|${b.parentId ?? ''}`).sort().join(';');
+  const isDirty = orderKey(draftBids) !== orderKey(submittedBids) || blockKey(draftBlocks) !== blockKey(submittedBlocks);
+  // Single orders + blocks together may not exceed the power rating in any SP.
+  const violations = powerViolations(hourlyToSp(sanitizeBids(draftBids, P)), draftBlocks, P);
+  const draftCount = draftBids.length + draftBlocks.length;
+  const submittedCount = submittedBids.length + submittedBlocks.length;
 
   // Starting SoC of the delivery day: current SoC played forward through today's
   // remaining (undelivered) net positions.
@@ -147,7 +155,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
 
   // Hourly blocks (before clearing): assumed filled for feasibility, filled at
   // forecast if the block's average forecast meets its limit.
-  const hourlyBlocks = (dayAhead.blocks ?? []).filter(b => b.auction === 'hourly');
+  const hourlyBlocks = isAuctionOpen ? draftBlocks : submittedBlocks;
   if (isAuctionOpen) {
     for (const b of hourlyBlocks) {
       for (let sp = b.startSp; sp <= b.endSp; sp += 2) hourNet[Math.floor(sp / 2)] += b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw;
@@ -211,10 +219,11 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   };
 
   const submit = () => {
-    if (!isAuctionOpen) return;
+    if (!isAuctionOpen || violations.length) return;
     const clean = sanitizeBids(draftBids, P);
     onWithdrawBids?.();
     onSubmitBids(clean);
+    onSetBlocks?.('hourly', draftBlocks); // single orders and blocks go in together
     setDraft(draftFromBids(clean)); // editor shows exactly what was submitted
     setJustSubmitted(true);
   };
@@ -347,7 +356,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
                 {isAuctionOpen ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left` : 'Positions are locked · trade adjustments intraday'}
               </div>
               <div className="da-status-sub">
-                {submittedBids.length} order{submittedBids.length === 1 ? '' : 's'} submitted
+                {submittedCount} order{submittedCount === 1 ? '' : 's'} submitted{submittedBlocks.length ? ` (${submittedBlocks.length} block${submittedBlocks.length === 1 ? '' : 's'})` : ''}
                 {justSubmitted && !isDirty && <span className="da-submitted"> <CheckCircle size={12} /> sent</span>}
               </div>
             </div>
@@ -360,15 +369,22 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
                 <div className="da-quick-fill vertical">
                   <button className="btn btn-preset" onClick={() => presetArbitrage(2)}>Arbitrage · tight</button>
                   <button className="btn btn-preset" onClick={() => presetArbitrage(25)}>Arbitrage · safe</button>
-                  <button className="btn btn-preset" onClick={() => { setDraft({}); setJustSubmitted(false); }}>Clear</button>
+                  <button className="btn btn-preset" onClick={() => { setDraft({}); setDraftBlocks([]); setJustSubmitted(false); }}>Clear</button>
                 </div>
                 <button
                   className={`btn btn-submit da-submit-inline ${isDirty ? 'btn-buy' : ''}`}
                   onClick={submit}
-                  disabled={!isDirty}
+                  disabled={!isDirty || violations.length > 0}
                 >
-                  {isDirty ? `Submit ${draftBids.length} order${draftBids.length === 1 ? '' : 's'}` : submittedBids.length ? 'Orders up to date' : 'No orders yet'}
+                  {violations.length
+                    ? 'Over power limit — fix first'
+                    : isDirty ? `Submit ${draftCount} order${draftCount === 1 ? '' : 's'}${draftBlocks.length ? ` (${draftBlocks.length} block${draftBlocks.length === 1 ? '' : 's'})` : ''}` : submittedCount ? 'Orders up to date' : 'No orders yet'}
                 </button>
+                {violations.length > 0 && (
+                  <div className="da-power-warning negative">
+                    Orders + blocks exceed {P} MW: {violations.slice(0, 4).join(' · ')}{violations.length > 4 ? ` … +${violations.length - 4}` : ''}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -379,13 +395,14 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
         {sig && <DeskSignalsPanel signals={sig} avgPrice={forecast.reduce((x, y) => x + Math.abs(y), 0) / DA_HOURS} />}
         <DaBlockOrders
           auction="hourly"
-          blocks={dayAhead.blocks ?? []}
+          blocks={isAuctionOpen ? draftBlocks : submittedBlocks}
+          submitted={submittedBlocks}
           results={dayAhead.blockResults ?? []}
           isOpen={isAuctionOpen}
           forecastBySp={Array.from({ length: 48 }, (_, sp) => forecast[Math.floor(sp / 2)])}
           powerMw={P}
-          onSubmit={onSubmitBlock}
-          onCancel={onCancelBlock}
+          onAdd={b => { setDraftBlocks(prev => [...prev, b]); setJustSubmitted(false); }}
+          onRemove={id => { setDraftBlocks(prev => prev.filter(b => b.id !== id && b.parentId !== id)); setJustSubmitted(false); }}
         />
         {!isAuctionOpen && (
           <div className="da-gate-warning">
@@ -557,8 +574,7 @@ export default function DayAheadAuction(props: Props) {
           battery={props.battery}
           currentTime={props.currentTime}
           onSubmitHalfHourBids={props.onSubmitHalfHourBids}
-          onSubmitBlock={props.onSubmitBlock}
-          onCancelBlock={props.onCancelBlock}
+          onSetBlocks={props.onSetBlocks}
         />
       )}
       {view === 'today' && <DayAheadToday dayAhead={d} ledger={props.ledger ?? []} battery={props.battery} currentTime={props.currentTime} />}

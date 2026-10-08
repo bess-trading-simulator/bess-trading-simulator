@@ -270,3 +270,35 @@ export function clearHalfHourAuction(
   }
   return { results, positions };
 }
+
+/**
+ * Power check across an auction's orders: per SP and side, the MW of all
+ * single orders + blocks (+ an existing position `netBySp`, + = sell) may not
+ * exceed the power rating. Returns one message per violating SP/side.
+ */
+export function powerViolations(
+  orders: { sp: number; side: OrderSide; volumeMw: number }[],
+  blocks: DaBlockOrder[],
+  powerMw: number,
+  netBySp: number[] = [],
+): string[] {
+  const tot: Record<string, number> = {};
+  const add = (sp: number, side: OrderSide, mw: number) => { const k = `${sp}|${side}`; tot[k] = (tot[k] ?? 0) + mw; };
+  for (const o of orders) add(o.sp, o.side, o.volumeMw);
+  for (const b of blocks) for (let sp = b.startSp; sp <= b.endSp; sp++) add(sp, b.side, b.volumeMw);
+  const out: string[] = [];
+  const t = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
+  for (const [k, mw] of Object.entries(tot)) {
+    const [spS, side] = k.split('|');
+    const sp = Number(spS);
+    const net = netBySp[sp] ?? 0;
+    const room = side === OrderSide.SELL ? powerMw - net : powerMw + net;
+    if (mw > room + 1e-9) out.push(`${t(sp)} ${side === OrderSide.BUY ? 'buy' : 'sell'} ${mw} MW > ${room} MW room`);
+  }
+  return out.sort();
+}
+
+/** Expand hourly orders to per-SP orders (for power checks). */
+export function hourlyToSp(bids: DayAheadBid[]): { sp: number; side: OrderSide; volumeMw: number }[] {
+  return bids.flatMap(b => [2 * b.hour, 2 * b.hour + 1].map(sp => ({ sp, side: b.side, volumeMw: b.volumeMw })));
+}

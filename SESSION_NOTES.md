@@ -502,3 +502,8 @@ classic and linked block orders there (block parameters doc). Shown for both auc
   hours" preset, feasibility). Today view lists all auction orders incl. blocks.
 - Interconnector/plant events exist as DA desk signals; unplanned trips DURING delivery
   (SIP/ID impact) are still open.
+- Blocks are now part of the order DRAFT: "Add to draft", sent with the auction's Submit
+  button together with single orders (`setBlockOrdersAction` replaces the auction's block
+  list atomically; parents before children, orphans dropped). Status per block: draft —
+  not sent / submitted / accepted / rejected. `powerViolations` blocks submits where
+  single orders + blocks (+ hourly position in the 30-min auction) exceed ±P per SP.

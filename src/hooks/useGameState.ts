@@ -7,7 +7,7 @@ import {
   reconfigureBattery, intradayChargeAction, intradayDischargeAction, loadScenario,
   submitBmOfferAction, loadMarketDays, replaceNextDay,
   placeIntradayOrderAction, cancelIntradayOrderAction,
-  submitBlockOrderAction, cancelBlockOrderAction, submitHalfHourBidsAction,
+  submitBlockOrderAction, cancelBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
 } from '../engine/gameState';
 import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { BatteryConfig } from '../engine/battery';
@@ -187,6 +187,10 @@ export function useGameState() {
     setState(prev => cancelBlockOrderAction(prev, id));
   }, []);
 
+  const setBlockOrders = useCallback((auction: 'hourly' | 'half', blocks: DaBlockOrder[]) => {
+    setState(prev => setBlockOrdersAction(prev, auction, blocks));
+  }, []);
+
   const submitHalfHourBids = useCallback((bids: HalfHourBid[]) => {
     setState(prev => submitHalfHourBidsAction(prev, bids));
   }, []);
@@ -276,7 +280,7 @@ export function useGameState() {
     state, dataSource, togglePause, setSpeed, stepForward,
     chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid,
     placeIntradayOrder, cancelIntradayOrder,
-    submitBlockOrder, cancelBlockOrder, submitHalfHourBids,
+    submitBlockOrder, cancelBlockOrder, submitHalfHourBids, setBlockOrders,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, configureBattery,
     loadSavedState, reset,

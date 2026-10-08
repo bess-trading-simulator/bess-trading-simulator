@@ -7,14 +7,17 @@ import { X } from 'lucide-react';
 
 interface Props {
   auction: 'hourly' | 'half';
+  /** Blocks of this auction in your order draft (sent with the auction's Submit button) */
   blocks: DaBlockOrder[];
+  /** Blocks currently submitted to the auction (to show draft vs submitted) */
+  submitted: DaBlockOrder[];
   results: BlockResult[];
   isOpen: boolean;
   /** Desk forecast per SP for this auction */
   forecastBySp: number[];
   powerMw: number;
-  onSubmit?: (block: Omit<DaBlockOrder, 'id'>) => void;
-  onCancel?: (id: string) => void;
+  onAdd?: (block: DaBlockOrder) => void;
+  onRemove?: (id: string) => void;
 }
 
 const t = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
@@ -27,8 +30,11 @@ function avgOver(prices: number[], startSp: number, endSp: number): number {
 }
 
 /** Block orders for one DA auction: create (incl. linked children), list, cancel, results. */
-export default function DaBlockOrders({ auction, blocks, results, isOpen, forecastBySp, powerMw, onSubmit, onCancel }: Props) {
+export default function DaBlockOrders({ auction, blocks, submitted, results, isOpen, forecastBySp, powerMw, onAdd, onRemove }: Props) {
   const mine = blocks.filter(b => b.auction === auction);
+  const sameAs = (a: DaBlockOrder, b: DaBlockOrder) =>
+    a.side === b.side && a.startSp === b.startSp && a.endSp === b.endSp && a.volumeMw === b.volumeMw && a.price === b.price && a.parentId === b.parentId;
+  const isSubmitted = (b: DaBlockOrder) => submitted.some(x => x.id === b.id && sameAs(x, b));
   const resultById = new Map(results.map(r => [r.id, r]));
   const step = auction === 'hourly' ? 2 : 1;
   const [side, setSide] = useState<OrderSide>(OrderSide.BUY);
@@ -43,16 +49,17 @@ export default function DaBlockOrders({ auction, blocks, results, isOpen, foreca
     auction, side, startSp: start, endSp: end, volumeMw: Number(mw), price: price === '' ? NaN : Number(price),
     ...(parentId ? { parentId } : {}),
   };
-  const error = validateBlock(input, blocks, powerMw);
+  const error = validateBlock(input, mine, powerMw);
   const fillsAtForecast = Number.isFinite(input.price) && (side === OrderSide.BUY ? avgFc <= input.price : avgFc >= input.price);
 
   const startOptions = Array.from({ length: 48 / step }, (_, i) => i * step);
   const endOptions = Array.from({ length: 48 }, (_, sp) => sp).filter(sp => (auction === 'hourly' ? sp % 2 === 1 : true) && sp > start);
   const parents = mine.filter(b => !b.parentId);
 
-  const submit = () => {
-    if (error || !onSubmit) return;
-    onSubmit(input);
+  const add = () => {
+    if (error || !onAdd) return;
+    const id = `${auction === 'hourly' ? 'BH' : 'BQ'}-${Date.now().toString(36).slice(-4)}${Math.floor(Math.random() * 36).toString(36)}`;
+    onAdd({ ...input, id });
     setParentId('');
   };
 
@@ -65,7 +72,7 @@ export default function DaBlockOrders({ auction, blocks, results, isOpen, foreca
         <HelpIcon text="A block buys or sells the same MW over consecutive periods, all-or-nothing: it is accepted only if the AVERAGE clearing price over the block meets your limit; then each period settles at its own clearing price. Linked block: a child is only accepted together with its parent — e.g. parent = charge block at night, child = discharge block in the evening, so you can never end up selling energy you didn't buy. A profitable child can carry a parent that is slightly out of the money (combined surplus ≥ 0). EPEX offers classic and linked blocks in the GB 30-min auction; shown here for both auctions." />
       </div>
 
-      {isOpen && onSubmit && (
+      {isOpen && onAdd && (
         <div className="da-block-form">
           <div className="idb-side">
             <button className={`btn idb-side-btn buy ${side === OrderSide.BUY ? 'active' : ''}`} onClick={() => setSide(OrderSide.BUY)}>Buy · charge</button>
@@ -93,8 +100,8 @@ export default function DaBlockOrders({ auction, blocks, results, isOpen, foreca
               {parents.map(p => <option key={p.id} value={p.id}>{p.id} · {p.side === OrderSide.BUY ? 'buy' : 'sell'} {range(p)}</option>)}
             </select>
           </label>
-          <button className={`btn btn-submit idb-submit ${side === OrderSide.BUY ? 'buy' : 'sell'}`} disabled={Boolean(error)} onClick={submit} title={error ?? ''}>
-            Add block
+          <button className={`btn btn-submit idb-submit ${side === OrderSide.BUY ? 'buy' : 'sell'}`} disabled={Boolean(error)} onClick={add} title={error ?? 'Adds the block to your order draft — send it with Submit'}>
+            Add to draft
           </button>
           <div className="idb-hint da-block-hint">
             Avg forecast {range({ startSp: start, endSp: end })}: £{avgFc.toFixed(2)}
@@ -125,12 +132,12 @@ export default function DaBlockOrders({ auction, blocks, results, isOpen, foreca
                   <td>{range(b)}</td>
                   <td>{b.side === OrderSide.BUY ? 'max' : 'min'} £{b.price.toFixed(2)}</td>
                   <td className="muted">£{avgOver(forecastBySp, b.startSp, b.endSp).toFixed(2)}</td>
-                  <td className={r ? (r.accepted ? 'positive' : 'negative') : 'muted'} title={r?.reason} style={{ cursor: r ? 'help' : 'default' }}>
-                    {r ? `${r.accepted ? '✓ accepted' : '✗ rejected'} · avg £${r.avgClearing.toFixed(2)}` : 'pending'}
+                  <td className={r ? (r.accepted ? 'positive' : 'negative') : isSubmitted(b) ? 'muted' : 'negative'} title={r?.reason} style={{ cursor: r ? 'help' : 'default' }}>
+                    {r ? `${r.accepted ? '✓ accepted' : '✗ rejected'} · avg £${r.avgClearing.toFixed(2)}` : isSubmitted(b) ? 'submitted' : 'draft — not sent'}
                   </td>
                   <td>
-                    {isOpen && onCancel && (
-                      <button className="btn btn-ghost btn-sm" title={b.parentId ? 'Cancel' : 'Cancel (and its linked children)'} onClick={() => onCancel(b.id)}><X size={12} /></button>
+                    {isOpen && onRemove && (
+                      <button className="btn btn-ghost btn-sm" title={b.parentId ? 'Remove' : 'Remove (and its linked children)'} onClick={() => onRemove(b.id)}><X size={12} /></button>
                     )}
                   </td>
                 </tr>

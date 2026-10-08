@@ -10,7 +10,7 @@ import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast } from './marketDay';
-import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids } from './dayAheadAuction';
+import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
@@ -368,14 +368,40 @@ export function cancelBlockOrderAction(state: GameState, id: string): GameState 
   return { ...state, dayAhead: { ...state.dayAhead, blocks: (state.dayAhead.blocks ?? []).filter(b => b.id !== id && b.parentId !== id) } };
 }
 
+/** Net DA position per SP already held for the auction's delivery day (+ = sell). */
+function deliveryDayNet(state: GameState): number[] {
+  const day = state.dayAhead.deliveryDay;
+  return Array.from({ length: 48 }, (_, sp) => state.dayAhead.playerSchedule
+    .filter(p => p.deliveryDay === day && p.period === sp)
+    .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0));
+}
+
+/**
+ * Set the full list of block orders for one auction (submitted together with
+ * the auction's single orders). Blocks are validated in order — parents must
+ * come before their children — and dropped if they break product rules or push
+ * any SP beyond the power rating together with the auction's other orders.
+ */
+export function setBlockOrdersAction(state: GameState, auction: 'hourly' | 'half', blocks: DaBlockOrder[]): GameState {
+  if (!auctionOpen(state, auction)) return state;
+  const P = state.battery.config.powerRatingMw;
+  const others = (state.dayAhead.blocks ?? []).filter(b => b.auction !== auction);
+  const singles = auction === 'hourly' ? hourlyToSp(state.dayAhead.bids) : (state.dayAhead.hhBids ?? []);
+  const net = auction === 'half' ? deliveryDayNet(state) : [];
+  const kept: DaBlockOrder[] = [];
+  for (const b of blocks) {
+    if (b.auction !== auction || !b.id || kept.some(k => k.id === b.id)) continue;
+    if (validateBlock(b, [...others, ...kept], P)) continue;
+    if (powerViolations(singles, [...kept, b], P, net).length) continue;
+    kept.push(b);
+  }
+  return { ...state, dayAhead: { ...state.dayAhead, blocks: [...others, ...kept] } };
+}
+
 /** Replace your orders in the 30-min auction (open between 09:20 results and 15:30 UK). */
 export function submitHalfHourBidsAction(state: GameState, bids: HalfHourBid[]): GameState {
   if (!auctionOpen(state, 'half')) return state;
-  const day = state.dayAhead.deliveryDay;
-  const net = Array.from({ length: 48 }, (_, sp) => state.dayAhead.playerSchedule
-    .filter(p => p.deliveryDay === day && p.period === sp)
-    .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0));
-  return { ...state, dayAhead: { ...state.dayAhead, hhBids: sanitizeHalfHourBids(bids, state.battery.config.powerRatingMw, net) } };
+  return { ...state, dayAhead: { ...state.dayAhead, hhBids: sanitizeHalfHourBids(bids, state.battery.config.powerRatingMw, deliveryDayNet(state)) } };
 }
 
 /** Withdraw submitted DA orders (all, or those of one hour) before gate closure. */
