@@ -1,4 +1,6 @@
 import type { DayAheadState, SettlementEntry } from '../engine/types';
+import { OrderSide } from '../engine/types';
+import { hourlyPrices, bidFills } from '../engine/dayAheadAuction';
 import type { BatteryState } from '../engine/battery';
 import { getUtcDayStart, getSettlementPeriod, formatDeliveryDay } from '../engine/clock';
 import { findEntry, signedMw } from '../engine/settlement';
@@ -61,8 +63,22 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
   const imbCash = rows.reduce((a, r) => a + (r.imbCash ?? 0), 0);
   const imbMwh = rows.reduce((a, r) => a + Math.abs(r.imbMwh ?? 0), 0);
   const delivered = rows.filter(r => r.status === 'settled' || r.status === 'delivered').length;
-  const results = dayAhead.todayResults ?? [];
-  const filledOrders = results.filter(r => r.buyFilled || r.sellFilled).length;
+
+  // Yesterday's auction orders for today, with their outcome at the clearing price.
+  const clearingH = hourlyPrices(dayAhead.forecastPrices);
+  const forecastH = dayAhead.todayForecast ? hourlyPrices(dayAhead.todayForecast) : null;
+  const orders = (dayAhead.todayBids ?? [])
+    .map(b => {
+      const clearing = clearingH[b.hour];
+      const filled = bidFills(b, clearing);
+      const buy = b.side === OrderSide.BUY;
+      const reason = filled
+        ? `Clearing £${clearing.toFixed(2)} ${buy ? '≤ your max' : '≥ your min'} £${b.price.toFixed(2)} → filled at £${clearing.toFixed(2)}`
+        : `Clearing £${clearing.toFixed(2)} ${buy ? 'above your max' : 'below your min'} £${b.price.toFixed(2)} → not filled`;
+      return { ...b, clearing, forecast: forecastH?.[b.hour] ?? null, filled, reason };
+    })
+    .sort((a, b) => a.hour - b.hour || a.side.localeCompare(b.side));
+  const hourLabel = (h: number) => `${String(h).padStart(2, '0')}–${String((h + 1) % 24).padStart(2, '0')}`;
 
   const chartData = rows.map(r => ({
     sp: spLabel(r.sp), price: r.price, forecast: r.forecast ?? null, net: r.net, soc: soc[r.sp],
@@ -97,7 +113,7 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
                 <span className="kpi-unit"> MWh</span>
               </span>
             </div>
-            <div className="kpi-sub">charge / discharge · {filledOrders}/{results.length} auction orders filled</div>
+            <div className="kpi-sub">charge / discharge · {orders.filter(o => o.filled).length}/{orders.length} auction orders filled</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Delivered</div>
@@ -143,6 +159,42 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
       </div>
 
       <div className="da-bid-section">
+        <h4 className="da-section-title">
+          Yesterday's auction · your orders for today
+          <HelpIcon text="Every order you submitted in yesterday's auction for today. Buy (charge) fills if the clearing price is at or below your max; sell (discharge) fills if it is at or above your min. Filled orders settle at the CLEARING price, not your limit." />
+        </h4>
+        {orders.length === 0 ? (
+          <div className="muted da-section-empty">
+            {dayAhead.todayBids ? 'You placed no orders in yesterday\'s auction.' : 'No auction history for today (session started today).'}
+          </div>
+        ) : (
+          <table className="data-table bid-table da-orders-table">
+            <thead>
+              <tr><th>Hour</th><th>Order</th><th>Your limit</th><th>Forecast</th><th>Clearing</th><th>Result</th></tr>
+            </thead>
+            <tbody>
+              {orders.map((o, i) => (
+                <tr key={i} className={o.filled ? '' : 'muted'}>
+                  <td>{hourLabel(o.hour)}</td>
+                  <td style={{ color: o.side === OrderSide.BUY ? 'var(--charge)' : 'var(--discharge)' }}>
+                    {o.side === OrderSide.BUY ? 'Buy · charge' : 'Sell · discharge'} {o.volumeMw} MW
+                  </td>
+                  <td>{o.side === OrderSide.BUY ? 'max' : 'min'} £{o.price.toFixed(2)}</td>
+                  <td className="muted">{o.forecast == null ? '—' : `£${o.forecast.toFixed(2)}`}</td>
+                  <td>£{o.clearing.toFixed(2)}</td>
+                  <td className={o.filled ? 'positive' : 'negative'} title={o.reason} style={{ cursor: 'help' }}>
+                    {o.filled ? '✓ filled' : '✗ not filled'}
+                    <small className="muted"> · {o.filled
+                      ? `${o.side === OrderSide.BUY ? 'paid' : 'received'} £${o.clearing.toFixed(2)}`
+                      : `£${Math.abs(o.clearing - o.price).toFixed(2)} ${o.side === OrderSide.BUY ? 'above max' : 'below min'}`}</small>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <h4 className="da-section-title">Delivery per settlement period</h4>
         <div className="da-bid-scroll">
           <table className="data-table bid-table">
             <thead>

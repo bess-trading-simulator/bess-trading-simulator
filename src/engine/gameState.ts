@@ -162,6 +162,7 @@ export function tickGameState(state: GameState): GameState {
         ...dayAheadForDay(today, next, now, carried),
         todayForecast: cleared ? s.nextDay.daForecast : undefined,
         todayResults: cleared ? s.dayAhead.results : undefined,
+        todayBids: cleared ? s.dayAhead.bids : undefined,
       },
       nextDay: next,
       bm: createBmState(),
