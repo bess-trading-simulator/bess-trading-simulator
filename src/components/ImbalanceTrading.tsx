@@ -265,7 +265,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
     : null;
 
   // BM and total P&L for today (delivered SPs), from the BOAs and the settlement ledger.
-  const bmToday = (state.bmAcceptances ?? []).filter((a) => a.day === todayDay && a.sp <= currentSp);
+  const bmToday = (state.bmAcceptances ?? []).filter((a) => a.day === todayDay && a.sp <= currentSp && a.status !== 'skipped');
   const bmCashToday = bmToday.reduce((s2, a) => s2 + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
   const bmCountToday = bmToday.length;
   const totalToday = state.ledger
