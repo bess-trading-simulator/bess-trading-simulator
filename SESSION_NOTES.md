@@ -465,3 +465,14 @@ real days (linear merit order vs a convex reality).
   confirmed/unconfirmed), per-hour signal chips (↑ orange / ↓ blue), "Today £" column
   for context; after clearing the result tooltip splits the forecast error by cause.
 - Signals are simulated on real-data days too (labelled in the help text).
+
+## S4.7 Forecast calibration (2026-10-08)
+- Measured (hourly products): real MID days MAE £8.9 (6.1 %), RMSE £13.6, P90 £20,
+  P99 £53, >£40 in 3 % of hours; simulated days MAE £5.2 (6.3 %) at avg £83.
+  Target was a typical GB desk (≈ £5-10 / 5-10 %). Before: 4 % on real days, too good.
+- Changes: merit order convex `RULES.slopeAt(price)` = 5 £/GW × clamp(price/100,
+  0.6, 2.5) for wind/temperature effects; events more frequent (~57 % of days) and
+  stronger; noise 3 % of price; synthetic DA prices scaled to recent levels
+  (`generateGBDayAhead`: 35 + 1.25 × shape, wind effect −60 × windPct).
+- MID = Elexon BMRS dataset, provided by EPEX (APXMIDP): volume-weighted short-term
+  traded price per SP, used in imbalance pricing; DA proxy, not the auction result.

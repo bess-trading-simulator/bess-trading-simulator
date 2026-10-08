@@ -70,8 +70,9 @@ export function generateGBDayAhead(seed: number, isWeekday: boolean, windPct: nu
 
   for (let sp = 0; sp < 48; sp++) {
     const hour = sp / 2;
-    const base = gbDemandShape(hour, isWeekday);
-    const windEffect = -windPct * 40;
+    // Scaled to recent GB levels: ~£65 overnight, ~£100 daytime, ~£140 evening peak.
+    const base = 35 + gbDemandShape(hour, isWeekday) * 1.25;
+    const windEffect = -windPct * 60;
     const noise = (rng() - 0.5) * 8;
     let price = base + windEffect + noise;
 

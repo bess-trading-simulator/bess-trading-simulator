@@ -442,7 +442,9 @@ function DeskSignalsPanel({ signals, avgPrice }: { signals: DeskSignals; avgPric
     i = j;
   }
   const gasRule = 0.01 * RULES.gasShare(30) * avgPrice;
-  const tempRule = RULES.demandPerDegree * RULES.meritSlope;
+  const slope = RULES.slopeAt(avgPrice);
+  const peakSlope = RULES.slopeAt(avgPrice * 1.4);
+  const tempRule = RULES.demandPerDegree * slope;
   const arrow = (up: boolean) => <span className={`da-chip ${up ? 'up' : 'down'}`}>{up ? 'prices ↑' : 'prices ↓'}</span>;
   return (
     <div className="da-signals">
@@ -463,7 +465,7 @@ function DeskSignalsPanel({ signals, avgPrice }: { signals: DeskSignals; avgPric
               ? <>{best.peak > 0 ? '+' : '−'}{Math.abs(best.peak / 1000).toFixed(1)} GW <small>{hhmm(best.from)}–{hhmm(best.to + 1)}</small> {arrow(best.peak < 0)}</>
               : <>no material change</>}
           </div>
-          <div className="da-signal-rule">+1 GW wind ≈ −£{RULES.meritSlope.toFixed(0)}/MWh (cheaper plant on the margin) · per-hour in the table</div>
+          <div className="da-signal-rule">+1 GW wind ≈ −£{slope.toFixed(1)}/MWh at today's price level, ≈ −£{peakSlope.toFixed(1)} at the peak (merit order steeper when prices are high) · per hour in the table</div>
         </div>
         <div className="da-signal">
           <div className="da-signal-label">Temperature vs normal</div>
