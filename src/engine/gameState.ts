@@ -4,7 +4,7 @@ import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getS
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery } from './battery';
-import { generateFullAnalysis, imbalanceSettlementPrice } from './ukMarket';
+import { generateFullAnalysis, imbalanceSettlementPrice, nivForecastError } from './ukMarket';
 import type { TradePosition } from './ukMarket';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
@@ -106,7 +106,8 @@ export function loadMarketDays(state: GameState, today: MarketDay, nextIn: Marke
   const firstSip = today.sipOutturn[0] ?? 0;
   const initialPrice = {
     timestamp: clock.currentTime,
-    price: firstSip,
+    // The cockpit price before the first tick: today's DA price (the SIP of SP1 isn't known yet).
+    price: today.daClearing[0] ?? firstSip,
     demandMw: 30000,
     renewablePct: 0.25,
     basePrice: today.daClearing[0] ?? firstSip,
@@ -319,12 +320,14 @@ export function stepForwardAction(state: GameState): GameState {
   return { ...result, clock: { ...result.clock, isPaused: gs.clock.isPaused } };
 }
 
-/** SIP of the running SP (hidden from the UI until it ends) — used for the cycle-log display only. */
+/**
+ * EXPECTED SIP of the running SP (model on the NIV forecast) — for the cycle-log
+ * display only. The actual SIP is unknown until the SP ends.
+ */
 function runningSpSip(state: GameState): number {
   const sp = getSettlementPeriod(state.clock.currentTime) - 1;
-  const sip = state.dayAhead.sipOutturn[sp];
-  if (Number.isFinite(sip) && sip !== 0) return sip;
-  return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, state.dayAhead.niv[sp] ?? 0);
+  const dayIdx = Math.floor(getUtcDayStart(state.clock.currentTime) / DAY_MS);
+  return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, (state.dayAhead.niv[sp] ?? 0) + nivForecastError(sp, dayIdx));
 }
 
 /**
@@ -534,6 +537,8 @@ export function submitBmOfferAction(
   const period = Math.max(0, Math.min(47, input.period));
   const mw = Math.max(0, Math.min(state.battery.config.powerRatingMw, input.mw));
   if (mw <= 0) return state;
+  // Only future SPs: a position for the running/past SP would never be delivered.
+  if (period <= getSettlementPeriod(state.clock.currentTime) - 1) return state;
 
   const assessment = assessBmOffer(state, input.direction, period, input.price);
   const offer: BmOffer = {

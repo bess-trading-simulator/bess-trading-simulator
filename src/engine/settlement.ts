@@ -12,7 +12,7 @@
 
 import type { GameState, SettlementEntry, Trade } from './types';
 import { MarketType, OrderSide } from './types';
-import { dispatchBattery, bookCash, getMaxChargeableMw, getMaxDischargeableMw } from './battery';
+import { dispatchBattery, redispatchBattery, bookCash } from './battery';
 import type { TradePosition } from './ukMarket';
 
 const SP_HOURS = 0.5;
@@ -96,32 +96,53 @@ export function deliverPeriod(state: GameState, day: number, sp: number): GameSt
   };
 }
 
-/** Allowed extra MW of deliberate deviation in the running SP (by direction). */
+/**
+ * SoC at the start of the running SP, i.e. before this SP's dispatch so far
+ * (the contract plus any deviation already applied) — the basis for re-dispatch.
+ */
+function spStartSoc(state: GameState, meteredMw: number): number {
+  const eff = state.battery.config.efficiencyPct / 100;
+  const soc = state.battery.currentSocMwh;
+  return meteredMw > 0 ? soc + meteredMw * SP_HOURS : soc - -meteredMw * SP_HOURS * eff;
+}
+
+/**
+ * Allowed extra MW of deliberate deviation in the running SP (by direction),
+ * measured against the NET dispatch: offsetting the contract first frees power
+ * and energy, then the battery's limits apply to the resulting net.
+ */
 export function deviationRoom(state: GameState, day: number, sp: number): { charge: number; discharge: number } {
   const e = findEntry(state.ledger, day, sp);
   const metered = e?.meteredMw ?? 0;
-  const p = state.battery.config.powerRatingMw;
+  const { powerRatingMw: p, capacityMwh: cap, minSocPct, maxSocPct, efficiencyPct } = state.battery.config;
+  const eff = efficiencyPct / 100;
+  const start = spStartSoc(state, metered);
+  const maxNetDischarge = Math.min(p, Math.max(0, start - cap * minSocPct / 100) / SP_HOURS);
+  const maxNetCharge = Math.min(p, Math.max(0, cap * maxSocPct / 100 - start) / (SP_HOURS * eff));
   return {
-    discharge: Math.max(0, Math.min(p - metered, getMaxDischargeableMw(state.battery))),
-    charge: Math.max(0, Math.min(p + metered, getMaxChargeableMw(state.battery))),
+    discharge: Math.max(0, round2(maxNetDischarge - metered)),
+    charge: Math.max(0, round2(metered + maxNetCharge)),
   };
 }
 
 /**
  * Deliberately deviate from the contracted position in the running SP
- * (+ = discharge more / charge less, − = charge more). Settled at SIP later.
+ * (+ = discharge more / charge less, − = charge more). The SP is re-dispatched
+ * with the new NET (contract + deviation); settled at SIP later.
  */
 export function applyDeviation(state: GameState, day: number, sp: number, signed: number, logPrice: number): GameState {
+  if (!Number.isFinite(signed)) return state;
   const room = deviationRoom(state, day, sp);
   const want = signed > 0 ? Math.min(signed, room.discharge) : -Math.min(-signed, room.charge);
   if (Math.abs(want) < 0.01) return state;
-  const { newState, actualMw } = dispatchBattery(state.battery, want, state.clock.currentTime, logPrice);
-  if (Math.abs(actualMw) < 0.01) return state;
   const prev = findEntry(state.ledger, day, sp) ?? emptyEntry(day, sp);
+  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.meteredMw + want, state.clock.currentTime, logPrice);
+  const change = actualMw - prev.meteredMw;
+  if (Math.abs(change) < 0.01) return state;
   const entry: SettlementEntry = {
     ...prev,
-    deviationMw: round2(prev.deviationMw + actualMw),
-    meteredMw: round2(prev.meteredMw + actualMw),
+    deviationMw: round2(prev.deviationMw + change),
+    meteredMw: round2(actualMw),
   };
   return { ...state, battery: newState, ledger: upsert(state.ledger, entry) };
 }
@@ -133,11 +154,13 @@ export function applyDeviation(state: GameState, day: number, sp: number, signed
 export function settlePeriod(state: GameState, day: number, sp: number, sip: number): GameState {
   const e = findEntry(state.ledger, day, sp);
   if (!e || e.settled) return state;
-  const imbalanceMw = round2(e.meteredMw - e.contractedMw);
-  const imbalanceMwh = round2(imbalanceMw * SP_HOURS);
+  // Ignore sub-0.01 MWh rounding dust (no £0 phantom trades).
+  const rawMwh = round2((e.meteredMw - e.contractedMw) * SP_HOURS);
+  const imbalanceMwh = Math.abs(rawMwh) < 0.01 ? 0 : rawMwh;
+  const imbalanceMw = imbalanceMwh / SP_HOURS;
   const imbalanceCash = round2(imbalanceMwh * sip);
   const entry: SettlementEntry = { ...e, imbalanceMwh, imbalancePrice: sip, imbalanceCash, settled: true };
-  const trades = Math.abs(imbalanceMw) >= 0.01
+  const trades = imbalanceMwh !== 0
     ? [...state.trades, {
         orderId: `imb-${day}-${sp}`,
         side: imbalanceMw > 0 ? OrderSide.SELL : OrderSide.BUY,

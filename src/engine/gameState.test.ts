@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createGameState, loadMarketDays, loadScenario, submitDayAheadBids, stepForwardAction,
-  chargeBatteryAction, placeIntradayOrderAction, intradayChargeAction,
+  chargeBatteryAction, dischargeBatteryAction, placeIntradayOrderAction, intradayChargeAction, submitBmOfferAction,
   submitBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
 } from './gameState';
 import { OrderSide } from './types';
@@ -372,5 +372,43 @@ describe('scenarios: auction day, live news, unforeseen shocks', () => {
     const after = buildBook(s, SDAY, 34);
     // Curated SIP 600 → anchor DA + 0.8 × (SIP − DA) ≈ £500
     if (after) expect(after.mid).toBeGreaterThan(300); // still open until 16:00 gate
+  });
+});
+
+describe('imbalance deviations re-dispatch the NET position', () => {
+  const withContract = (mw: number, action: 'charge' | 'discharge') => {
+    const s = fresh();
+    return {
+      ...s,
+      dayAhead: { ...s.dayAhead, playerSchedule: [{ period: 4, deliveryDay: D0, market: 'da' as const, action, mw, price: 50, lockedAt: 0 }] },
+    };
+  };
+
+  it('offsetting a discharge contract leaves the battery idle (no phantom round-trip losses)', () => {
+    let s = step(withContract(50, 'discharge'), 4); // SP4 delivered: SoC 50 → 25
+    expect(s.battery.currentSocMwh).toBeCloseTo(25, 5);
+    s = chargeBatteryAction(s, 50);
+    expect(s.battery.currentSocMwh).toBeCloseTo(50, 5);
+    expect(s.battery.totalDischargedMwh).toBeCloseTo(0, 5);
+    expect(s.battery.totalChargedMwh).toBeCloseTo(0, 5);
+    expect(findEntry(s.ledger, D0, 4)).toMatchObject({ meteredMw: 0, deviationMw: -50 });
+  });
+
+  it('a charging contract can be flipped into a full discharge', () => {
+    let s = step(withContract(50, 'charge'), 4);
+    s = dischargeBatteryAction(s, 100);
+    expect(findEntry(s.ledger, D0, 4)!.meteredMw).toBe(50);
+    expect(s.battery.currentSocMwh).toBeCloseTo(25, 5); // started at 50, net discharge 25 MWh
+  });
+
+  it('ignores non-finite deviations', () => {
+    const s = step(fresh(), 4);
+    expect(dischargeBatteryAction(s, NaN)).toBe(s);
+  });
+
+  it('rejects BM offers for the running or past SP', () => {
+    const s = step(fresh(), 10);
+    const r = submitBmOfferAction(s, { period: 10, direction: 'offer', mw: 20, price: 1 });
+    expect(r).toBe(s);
   });
 });

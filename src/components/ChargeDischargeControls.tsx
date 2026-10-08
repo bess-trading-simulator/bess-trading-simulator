@@ -40,7 +40,7 @@ export default function ChargeDischargeControls({ battery, currentPrice, onCharg
         {currentPrice < 0 && <span className="price-hint amazing">Negative price! Charge now!</span>}
       </div>
       <div className="constraint-note">
-        This battery is rated at {battery.config.powerRatingMw} MW, so {battery.config.powerRatingMw} MW is allowed for one settlement period if SoC/headroom permits. One half-hour at 50 MW equals 25 MWh.
+        This battery is rated at {battery.config.powerRatingMw} MW, so {battery.config.powerRatingMw} MW is allowed for one settlement period if SoC/headroom permits. One half-hour at 50 MW equals 25 MWh. Charging/discharging here is an imbalance position: it settles at the SIP published after the SP — the costs shown use the current price as an estimate.
       </div>
 
       <div className="controls-grid">

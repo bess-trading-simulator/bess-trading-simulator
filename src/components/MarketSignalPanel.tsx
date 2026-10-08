@@ -1,3 +1,4 @@
+import { nivForecastError } from '../engine/ukMarket';
 import type { GameState } from '../engine/types';
 import { getSettlementPeriod } from '../engine/clock';
 import { getMaxChargeableMw, getMaxDischargeableMw } from '../engine/battery';
@@ -68,7 +69,11 @@ function buildSignal(state: GameState): Signal {
   const dischargeSps = maxDischargeMw > 0 ? Math.floor(state.battery.currentSocMwh / (maxDischargeMw * 0.5)) : 0;
   const renewablePct = state.currentPrice ? Math.round(state.currentPrice.renewablePct * 100) : 0;
   const demandGw = state.currentPrice ? state.currentPrice.demandMw / 1000 : 0;
-  const niv = state.dayAhead.niv[currentSp];
+  // The running SP's NIV isn't published yet — use the forecast (actual + forecast error).
+  const nivRaw = state.dayAhead.niv[currentSp];
+  const niv = nivRaw === undefined ? undefined
+    : currentSp < state.dayAhead.revealedPeriods ? nivRaw
+      : Math.round(nivRaw + nivForecastError(currentSp, Math.floor(state.clock.currentTime / 86_400_000)));
   const da = state.dayAhead.forecastPrices[currentSp];
   const sip = currentSp < state.dayAhead.revealedPeriods ? state.dayAhead.sipOutturn[currentSp] : null;
 
