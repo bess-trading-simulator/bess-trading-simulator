@@ -323,6 +323,35 @@ export interface SettlementEntry {
   imbalancePrice: number | null;
   imbalanceCash: number;
   settled: boolean;
+  /** Deliberate deviation set point per 5-min interval (6 values, MW); its mean is deviationMw */
+  deviationProfile?: number[];
+}
+
+/** Asset registration: a Balancing Mechanism unit must follow its FPN; a non-BM asset can spill. */
+export type AssetType = 'non-bm' | 'bm';
+
+/**
+ * Standing BM bid/offer for one SP of a BM unit (changeable until gate closure T-60).
+ * Offer = paid to INCREASE export (discharge more); bid = you pay to DECREASE
+ * export / charge more (negative bid = you get paid). Pay-as-bid.
+ */
+export interface BmStandingOrder {
+  day: number;
+  sp: number;
+  offerMw: number;
+  offerPrice: number | null;
+  bidMw: number;
+  bidPrice: number | null;
+}
+
+/** A Bid-Offer Acceptance (BOA) issued by NESO for your unit. */
+export interface BmAcceptance {
+  day: number;
+  sp: number;
+  kind: 'offer' | 'bid';
+  mw: number;
+  price: number;
+  time: number;
 }
 
 export interface MarketEvent {
@@ -429,6 +458,11 @@ export interface GameState {
   ledger: SettlementEntry[];
   /** Active scenario (illustrative or a chosen real day), if any */
   scenario?: ScenarioInfo | null;
+  /** How the battery is registered (default non-BM) */
+  assetType?: AssetType;
+  /** BM unit: standing bids/offers per SP and the BOAs NESO issued */
+  bmBook?: BmStandingOrder[];
+  bmAcceptances?: BmAcceptance[];
 }
 
 export const GLOSSARY: Record<string, string> = {

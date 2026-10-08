@@ -3,6 +3,7 @@ import {
   createGameState, loadMarketDays, loadScenario, submitDayAheadBids, stepForwardAction,
   chargeBatteryAction, dischargeBatteryAction, placeIntradayOrderAction, intradayChargeAction, submitBmOfferAction,
   submitBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
+  subStepAction, setDeviationAction, setAssetTypeAction, setBmOrderAction,
 } from './gameState';
 import { OrderSide } from './types';
 import type { GameState, MarketDay } from './types';
@@ -410,5 +411,80 @@ describe('imbalance deviations re-dispatch the NET position', () => {
     const s = step(fresh(), 10);
     const r = submitBmOfferAction(s, { period: 10, direction: 'offer', mw: 20, price: 1 });
     expect(r).toBe(s);
+  });
+});
+
+describe('intra-SP control (5-minute set points)', () => {
+  it('steps 5 minutes inside the SP and snaps to the next SP after the last interval', () => {
+    let s = step(fresh(), 10); // 05:00
+    for (let i = 0; i < 5; i++) s = subStepAction(s);
+    expect(s.clock.currentTime).toBe(D0 + (5 * 60 + 25) * 60000);
+    s = subStepAction(s);
+    expect(s.clock.currentTime).toBe(D0 + (5 * 60 + 30) * 60000);
+  });
+
+  it('metered energy = mean of the set point profile; past intervals stay fixed', () => {
+    let s = step(fresh(), 10);
+    s = setDeviationAction(s, 30);           // 05:00 → 30 MW for the whole SP
+    s = subStepAction(subStepAction(s));     // 05:10 (interval 2)
+    s = setDeviationAction(s, -30);          // from now on charge 30
+    const e = findEntry(s.ledger, D0, 10)!;
+    expect(e.deviationProfile).toEqual([30, 30, -30, -30, -30, -30]);
+    expect(e.deviationMw).toBeCloseTo(-10, 5);
+    expect(e.meteredMw).toBeCloseTo(-10, 5);
+    // battery only ran the net: 50 MWh start, net charge 10 MW × 0.5 h × 0.9
+    expect(s.battery.currentSocMwh).toBeCloseTo(54.5, 5);
+    s = step(s, 1);
+    expect(findEntry(s.ledger, D0, 10)!.imbalanceMwh).toBeCloseTo(-5, 5);
+  });
+});
+
+describe('BM unit: standing bids/offers and BOAs', () => {
+  const shortDay = day(D0, { niv: flat(400), sipOutturn: flat(200) });
+  const longDay = day(D0, { niv: flat(-400), sipOutturn: flat(-10) });
+
+  it('NESO accepts an offer at or below the marginal price when short (pay-as-bid, no imbalance)', () => {
+    let s = setAssetTypeAction(fresh(shortDay), 'bm');
+    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 150, bidMw: 0, bidPrice: null });
+    s = step(s, 11); // SP 10 starts → BOA + delivery, then settles
+    expect(s.bmAcceptances).toHaveLength(1);
+    const e = findEntry(s.ledger, D0, 10)!;
+    expect(e.contractedMw).toBe(30);
+    expect(e.meteredMw).toBe(30);
+    expect(e.imbalanceMwh).toBe(0);
+    expect(e.contractCash).toBeCloseTo(30 * 0.5 * 150, 5);
+    expect(s.events.some(ev => ev.id.startsWith('live-boa'))).toBe(true);
+  });
+
+  it('rejects offers priced above the marginal price and ignores non-BM assets', () => {
+    let s = setAssetTypeAction(fresh(shortDay), 'bm');
+    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 250, bidMw: 0, bidPrice: null });
+    expect(step(s, 11).bmAcceptances ?? []).toHaveLength(0);
+    let t = fresh(shortDay); // non-BM
+    t = setBmOrderAction(t, { day: D0, sp: 10, offerMw: 30, offerPrice: 100, bidMw: 0, bidPrice: null });
+    expect(step(t, 11).bmAcceptances ?? []).toHaveLength(0);
+  });
+
+  it('accepts bids when long (charge, you pay your bid — negative bid = paid)', () => {
+    let s = setAssetTypeAction(fresh(longDay), 'bm');
+    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 0, offerPrice: null, bidMw: 40, bidPrice: 5 });
+    s = step(s, 11);
+    const e = findEntry(s.ledger, D0, 10)!;
+    expect(e.contractedMw).toBe(-40);
+    expect(e.contractCash).toBeCloseTo(-40 * 0.5 * 5, 5);
+  });
+
+  it('orders can only be changed before BM gate closure (T-60)', () => {
+    const s = setAssetTypeAction(step(fresh(shortDay), 9), 'bm'); // 04:30
+    expect(setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 1, bidMw: 0, bidPrice: null })).toBe(s); // 05:00 SP, gate 04:00
+  });
+
+  it('caps each 5-minute set point at the power rating', () => {
+    let s = step(fresh(), 10);
+    s = setDeviationAction(s, 30);
+    s = subStepAction(subStepAction(s));
+    s = setDeviationAction(s, -999);
+    const e = findEntry(s.ledger, D0, 10)!;
+    expect(Math.min(...e.deviationProfile!)).toBeGreaterThanOrEqual(-50);
   });
 });

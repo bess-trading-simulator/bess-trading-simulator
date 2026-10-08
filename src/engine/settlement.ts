@@ -11,6 +11,7 @@
 //    published after the SP. Undeliverable contracts therefore cost imbalance.
 
 import type { GameState, SettlementEntry, Trade } from './types';
+import { SUB_STEPS_PER_SP, subStepIndex } from './clock';
 import { MarketType, OrderSide } from './types';
 import { dispatchBattery, redispatchBattery, bookCash } from './battery';
 import type { TradePosition } from './ukMarket';
@@ -142,6 +143,59 @@ export function applyDeviation(state: GameState, day: number, sp: number, signed
   const entry: SettlementEntry = {
     ...prev,
     deviationMw: round2(prev.deviationMw + change),
+    meteredMw: round2(actualMw),
+    deviationProfile: undefined,
+  };
+  return { ...state, battery: newState, ledger: upsert(state.ledger, entry) };
+}
+
+/**
+ * Range of the AVERAGE deliberate deviation (MW) possible in the running SP,
+ * given the contract already delivered and the SoC at the SP start.
+ */
+export function deviationRange(state: GameState, day: number, sp: number): { min: number; max: number } {
+  const e = findEntry(state.ledger, day, sp);
+  const metered = e?.meteredMw ?? 0;
+  const delivered = e?.deliveredMw ?? 0;
+  const { powerRatingMw: p, capacityMwh: cap, minSocPct, maxSocPct, efficiencyPct } = state.battery.config;
+  const eff = efficiencyPct / 100;
+  const start = spStartSoc(state, metered);
+  const maxNetDischarge = Math.min(p, Math.max(0, start - cap * minSocPct / 100) / SP_HOURS);
+  const maxNetCharge = Math.min(p, Math.max(0, cap * maxSocPct / 100 - start) / (SP_HOURS * eff));
+  return { min: round2(-maxNetCharge - delivered), max: round2(maxNetDischarge - delivered) };
+}
+
+/**
+ * Intra-SP control: set the deliberate deviation set point (MW, + = discharge
+ * more) from the current 5-minute interval to the end of the SP. Past intervals
+ * are fixed. The SP's metered energy = contract delivered + mean of the profile;
+ * the battery is re-dispatched to that net. Returns the state unchanged if the
+ * set point is invalid; clips it to what power/SoC allow.
+ */
+export function setDeviationSetpoint(state: GameState, day: number, sp: number, setpointMw: number, logPrice: number): GameState {
+  if (!Number.isFinite(setpointMw)) return state;
+  const now = state.clock.currentTime;
+  if (now < day + sp * 1_800_000 || now >= day + (sp + 1) * 1_800_000) return state; // only the running SP
+  const k = subStepIndex(now);
+  const prev = findEntry(state.ledger, day, sp) ?? emptyEntry(day, sp);
+  const profile = prev.deviationProfile?.slice() ?? new Array(SUB_STEPS_PER_SP).fill(prev.deviationMw);
+  const past = profile.slice(0, k).reduce((a, v) => a + v, 0);
+  const n = SUB_STEPS_PER_SP - k;
+  const range = deviationRange(state, day, sp);
+  // mean = (past + x·n)/6 must stay within [min, max]
+  // mean = (past + x·n)/6 within [min, max] (energy), and the net output in each
+  // interval (contract delivered + x) within ±power rating.
+  const P = state.battery.config.powerRatingMw;
+  const xMin = Math.max((range.min * SUB_STEPS_PER_SP - past) / n, -P - prev.deliveredMw);
+  const xMax = Math.min((range.max * SUB_STEPS_PER_SP - past) / n, P - prev.deliveredMw);
+  const x = round2(Math.max(xMin, Math.min(xMax, setpointMw)));
+  for (let i = k; i < SUB_STEPS_PER_SP; i++) profile[i] = x;
+  const newDev = profile.reduce((a, v) => a + v, 0) / SUB_STEPS_PER_SP;
+  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.deliveredMw + newDev, now, logPrice);
+  const entry: SettlementEntry = {
+    ...prev,
+    deviationProfile: profile,
+    deviationMw: round2(actualMw - prev.deliveredMw),
     meteredMw: round2(actualMw),
   };
   return { ...state, battery: newState, ledger: upsert(state.ledger, entry) };

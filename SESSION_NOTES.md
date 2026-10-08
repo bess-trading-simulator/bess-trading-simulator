@@ -564,3 +564,19 @@ Fixed:
 - Rounding dust no longer creates £0 0.01 MW imbalance trades; NaN deviations ignored;
   BM offers for the running/past SP rejected; stale help texts fixed.
 Tests: 65.
+
+## S4.13 Intra-SP control + BM unit mode (2026-10-08)
+- Clock `tick` now snaps to the next SP boundary; `subStepAction` advances 5 min inside the
+  running SP (`SUB_STEP_MS`, `subStepIndex`). The global step/autoplay still moves per SP.
+- Non-BM ("spill"): `setDeviationSetpoint` — set point per 5-min interval from now to SP end
+  (`SettlementEntry.deviationProfile`), past intervals fixed; metered = delivered + mean;
+  limits: SP-average energy from SP-start SoC and per-interval power (±P incl. contract).
+  `nivEstimate` sharpens the running-SP NIV with each interval (band 220 → 37).
+  UI `IntraSpControl.tsx`: live NIV estimate, BOA flow, frequency (illustrative), 6 interval
+  boxes, slider, "Apply from hh:mm", "Next 5 min".
+- BM unit (`state.assetType = 'bm'`): deliberate deviation disabled (FPN binding). Standing
+  bid/offer per SP (`bmBook`, editable until T-60). At SP start NESO accepts (merit-order
+  rule): system short (NIV > 50) & offer ≤ SIP → discharge; long & bid ≥ SIP → charge;
+  limited by power/SoC; pay-as-bid; becomes a 'bm' contract (no imbalance); BOA as live
+  news. UI `BmPanel.tsx`. Asset toggle in the Imbalance action panel.
+Tests: 72.

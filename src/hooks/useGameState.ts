@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { GameState, DayAheadBid, SpeedPreset, BmDirection, DaBlockOrder, HalfHourBid } from '../engine/types';
+import type { GameState, DayAheadBid, SpeedPreset, BmDirection, DaBlockOrder, HalfHourBid, AssetType, BmStandingOrder } from '../engine/types';
 import { GameMode, SPEED_MS } from '../engine/types';
 import {
   createGameState, tickGameState, stepForwardAction,
@@ -8,6 +8,7 @@ import {
   submitBmOfferAction, loadMarketDays, replaceNextDay,
   placeIntradayOrderAction, cancelIntradayOrderAction,
   submitBlockOrderAction, cancelBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
+  subStepAction, setDeviationAction, setAssetTypeAction, setBmOrderAction,
 } from '../engine/gameState';
 import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { BatteryConfig } from '../engine/battery';
@@ -187,6 +188,11 @@ export function useGameState() {
     setState(prev => cancelBlockOrderAction(prev, id));
   }, []);
 
+  const subStep = useCallback(() => setState(prev => subStepAction(prev)), []);
+  const setDeviation = useCallback((mw: number) => setState(prev => setDeviationAction(prev, mw)), []);
+  const setAssetType = useCallback((t: AssetType) => setState(prev => setAssetTypeAction(prev, t)), []);
+  const setBmOrder = useCallback((o: BmStandingOrder) => setState(prev => setBmOrderAction(prev, o)), []);
+
   const setBlockOrders = useCallback((auction: 'hourly' | 'half', blocks: DaBlockOrder[]) => {
     setState(prev => setBlockOrdersAction(prev, auction, blocks));
   }, []);
@@ -292,6 +298,7 @@ export function useGameState() {
     chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid,
     placeIntradayOrder, cancelIntradayOrder,
     submitBlockOrder, cancelBlockOrder, submitHalfHourBids, setBlockOrders,
+    subStep, setDeviation, setAssetType, setBmOrder,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, configureBattery,
     loadSavedState, reset,

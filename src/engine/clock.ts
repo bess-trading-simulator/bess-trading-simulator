@@ -14,12 +14,22 @@ export function createClock(startDate?: Date) {
   };
 }
 
+/** 5-minute steps inside a settlement period (intra-SP control). */
+export const SUB_STEP_MS = 5 * 60 * 1000;
+export const SUB_STEPS_PER_SP = 6;
+
+/** Advance to the start of the next settlement period (snaps if mid-SP). */
 export function tick(clock: { currentTime: number; isPaused: boolean; speed: number | string; startTime: number }) {
   if (clock.isPaused) return clock;
   return {
     ...clock,
-    currentTime: clock.currentTime + HALF_HOUR_MS,
+    currentTime: Math.floor(clock.currentTime / HALF_HOUR_MS) * HALF_HOUR_MS + HALF_HOUR_MS,
   };
+}
+
+/** Index (0-5) of the 5-minute interval within the running SP. */
+export function subStepIndex(time: number): number {
+  return Math.floor((time % HALF_HOUR_MS) / SUB_STEP_MS);
 }
 
 export function getHour(time: number): number {
