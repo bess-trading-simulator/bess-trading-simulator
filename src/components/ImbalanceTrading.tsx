@@ -264,6 +264,14 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
     ? calls.reduce((s, r) => s + Math.abs(r.settledSip - r.forecastSip), 0) / calls.length
     : null;
 
+  // BM and total P&L for today (delivered SPs), from the BOAs and the settlement ledger.
+  const bmToday = (state.bmAcceptances ?? []).filter((a) => a.day === todayDay && a.sp <= currentSp);
+  const bmCashToday = bmToday.reduce((s2, a) => s2 + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
+  const bmCountToday = bmToday.length;
+  const totalToday = state.ledger
+    .filter((e) => e.deliveryDay === todayDay)
+    .reduce((s2, e) => s2 + e.contractCash + e.imbalanceCash, 0);
+
   // NIV trend: last 12 SETTLED SPs (the running SP's NIV isn't known yet).
   const nivWindowEnd = Math.min(currentSp, dayAhead.revealedPeriods);
   const nivWindowStart = Math.max(0, nivWindowEnd - 12);
@@ -342,6 +350,18 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
               {dailyPnL >= 0 ? '+' : '−'}£{Math.abs(dailyPnL).toFixed(0)}
             </strong>
             <span className="im-perf-sub">{totalTrades} {totalTrades === 1 ? 'trade' : 'trades'}</span>
+          </span>
+          <span className="im-perf-sep" />
+          <span className="im-perf-item" title="Bid-Offer Acceptances by NESO for your BM unit today, at your prices (settled as contracts).">
+            <span className="im-perf-label">BM P&amp;L</span>
+            <strong className={bmCashToday >= 0 ? 'positive' : 'negative'}>{bmCashToday >= 0 ? '+' : '−'}£{Math.abs(bmCashToday).toFixed(0)}</strong>
+            <span className="im-perf-sub">{bmCountToday} BOA{bmCountToday === 1 ? '' : 's'}</span>
+          </span>
+          <span className="im-perf-sep" />
+          <span className="im-perf-item" title="Everything settled today so far: day-ahead + intraday + BM contracts + imbalance, for delivered SPs.">
+            <span className="im-perf-label">Total today</span>
+            <strong className={totalToday >= 0 ? 'positive' : 'negative'}>{totalToday >= 0 ? '+' : '−'}£{Math.abs(totalToday).toFixed(0)}</strong>
+            <span className="im-perf-sub">all markets</span>
           </span>
           <span className="im-perf-sep" />
           <span className="im-perf-item">

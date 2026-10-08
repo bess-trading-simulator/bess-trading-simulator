@@ -129,6 +129,9 @@ export function loadMarketDays(state: GameState, today: MarketDay, nextIn: Marke
     intraday: createIntradayState(),
     ledger: [],
     scenario: null,
+    // A new session starts with an empty BM book (no BOAs from a previous run).
+    bmBook: [],
+    bmAcceptances: [],
   });
 }
 
@@ -180,6 +183,8 @@ export function tickGameState(state: GameState): GameState {
       nextDay: next,
       bm: createBmState(),
       ledger: s.ledger.filter(e => e.deliveryDay >= currentDayStart - DAY_MS),
+      bmBook: (s.bmBook ?? []).filter(b => b.day >= currentDayStart),
+      bmAcceptances: (s.bmAcceptances ?? []).filter(a => a.day >= currentDayStart - DAY_MS),
     };
   }
 

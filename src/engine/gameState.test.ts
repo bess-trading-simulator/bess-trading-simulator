@@ -487,4 +487,14 @@ describe('BM unit: standing bids/offers and BOAs', () => {
     const e = findEntry(s.ledger, D0, 10)!;
     expect(Math.min(...e.deviationProfile!)).toBeGreaterThanOrEqual(-50);
   });
+
+  it('a new session starts with an empty BM book (no BOAs from a previous run)', () => {
+    let s = setAssetTypeAction(fresh(shortDay), 'bm');
+    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 150, bidMw: 0, bidPrice: null });
+    s = step(s, 11);
+    expect(s.bmAcceptances).toHaveLength(1);
+    const again = loadMarketDays(s, shortDay, day(D0 + DAY));
+    expect(again.bmAcceptances).toHaveLength(0);
+    expect(again.bmBook).toHaveLength(0);
+  });
 });
