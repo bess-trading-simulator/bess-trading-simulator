@@ -19,7 +19,7 @@ import ReplayTimeline from './components/ReplayTimeline';
 import PostTradeExplainer from './components/PostTradeExplainer';
 import EndOfDayReport from './components/EndOfDayReport';
 import ForecastReview from './components/ForecastReview';
-import SupportPanels from './components/SupportPanels';
+import DeskPanels from './components/DeskPanels';
 import ImbalanceTrading from './components/ImbalanceTrading';
 import RenewablesForecast from './components/RenewablesForecast';
 import StartScreen from './components/StartScreen';
@@ -249,7 +249,7 @@ export default function App() {
               onSetAssetType={setAssetType}
               onSetBmOrder={setBmOrder}
             />
-            <SupportPanels state={state} lessonId={1} compact />
+            <DeskPanels state={state} />
           </div>
         )}
 
@@ -260,7 +260,7 @@ export default function App() {
               onPlaceOrder={placeIntradayOrder}
               onCancelOrder={cancelIntradayOrder}
             />
-            <SupportPanels state={state} lessonId={3} compact />
+            <DeskPanels state={state} />
           </div>
         )}
 
@@ -278,14 +278,13 @@ export default function App() {
               onSetBlocks={setBlockOrders}
               onSubmitHalfHourBids={submitHalfHourBids}
             />
-            <SupportPanels state={state} lessonId={2} compact />
+            <DeskPanels state={state} />
           </div>
         )}
 
         {view === 'forecast' && (
           <div className="grid-main-full">
             <RenewablesForecast dayAhead={state.dayAhead} />
-            <SupportPanels state={state} lessonId={2} compact />
           </div>
         )}
 
@@ -306,7 +305,6 @@ export default function App() {
               dayAhead={state.dayAhead}
               analysis={state.analysis}
             />
-            <SupportPanels state={state} lessonId={4} compact />
           </div>
         )}
       </main>

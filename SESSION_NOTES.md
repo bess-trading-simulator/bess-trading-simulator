@@ -606,3 +606,20 @@ Tests: 75.
   removed). Clock shows a "UK" tag. Elexon ingest still maps real UTC timestamps to
   settlement dates (`londonSettlementDate`).
 - Still simplified: 48 SPs every day (46/50-SP clock-change days not modelled).
+
+## S4.16 Desk replaces the legacy support panels in the sandbox (2026-10-08)
+Audit: the 17 legacy SupportPanels components predate the engine rebuild (mixed today/D+1
+positions by SP, gross vs net power, legacy price generator/mode/cycleLog, double-counting
+RevenueAttribution, leaky ModelComparison, stale roadmap/exam/frequency texts).
+- Sandbox views (Imbalance, Intraday, Day Ahead) now show `DeskPanels.tsx` instead:
+  - Risk: `desk.forwardBook` — next 8 SPs across midnight: net contract, pending orders
+    (working ID, open 30-min orders/blocks), projected SoC, undeliverable energy (imbalance
+    risk), gate countdown; alerts (short/long risk with buy/sell-back hint, auction gates,
+    SoC extremes).
+  - Review: `desk.benchmarks` — today's delivered P&L vs idle, naive schedule (shown from
+    19:00) and a SoC-feasible hindsight DA optimum (DP, 1 MWh grid, efficiency + wear);
+    `desk.mistakePatterns` — ledger-based findings (undeliverable volume, imbalance calls
+    with/against the system, unfilled DA orders/blocks, net £/MWh vs costs).
+- Forecast and Analysis views no longer show the panels.
+- The Academy (TrainingLesson) still uses SupportPanels and its legacy components — open item.
+Tests: 79.
