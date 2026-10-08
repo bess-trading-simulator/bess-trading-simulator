@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { GameState, DayAheadBid, SpeedPreset, BmDirection } from '../engine/types';
+import type { GameState, DayAheadBid, SpeedPreset, BmDirection, DaBlockOrder, HalfHourBid } from '../engine/types';
 import { GameMode, SPEED_MS } from '../engine/types';
 import {
   createGameState, tickGameState, stepForwardAction,
@@ -7,6 +7,7 @@ import {
   reconfigureBattery, intradayChargeAction, intradayDischargeAction, loadScenario,
   submitBmOfferAction, loadMarketDays, replaceNextDay,
   placeIntradayOrderAction, cancelIntradayOrderAction,
+  submitBlockOrderAction, cancelBlockOrderAction, submitHalfHourBidsAction,
 } from '../engine/gameState';
 import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { BatteryConfig } from '../engine/battery';
@@ -178,6 +179,18 @@ export function useGameState() {
     setState(prev => withdrawDayAheadBids(prev, hour));
   }, []);
 
+  const submitBlockOrder = useCallback((input: Omit<DaBlockOrder, 'id'>) => {
+    setState(prev => submitBlockOrderAction(prev, input));
+  }, []);
+
+  const cancelBlockOrder = useCallback((id: string) => {
+    setState(prev => cancelBlockOrderAction(prev, id));
+  }, []);
+
+  const submitHalfHourBids = useCallback((bids: HalfHourBid[]) => {
+    setState(prev => submitHalfHourBidsAction(prev, bids));
+  }, []);
+
   const placeIntradayOrder = useCallback((input: PlaceOrderInput) => {
     setState(prev => placeIntradayOrderAction(prev, input));
   }, []);
@@ -263,6 +276,7 @@ export function useGameState() {
     state, dataSource, togglePause, setSpeed, stepForward,
     chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid,
     placeIntradayOrder, cancelIntradayOrder,
+    submitBlockOrder, cancelBlockOrder, submitHalfHourBids,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, configureBattery,
     loadSavedState, reset,

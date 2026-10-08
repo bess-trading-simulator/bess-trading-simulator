@@ -7422,3 +7422,14 @@ body {
 .da-chip.up { color: var(--discharge); }
 .da-chip.down { color: var(--charge); }
 @media (max-width: 900px) { .da-signal-grid { grid-template-columns: 1fr 1fr; } }
+
+/* DA block orders */
+.da-blocks { margin: 4px 0 14px; }
+.da-block-form { display: grid; grid-template-columns: 1.6fr repeat(5, minmax(0, 1fr)) auto; gap: 8px; align-items: end; margin-bottom: 8px; }
+.da-block-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.da-block-form .input { font-size: 12px; padding: 4px 6px; }
+.da-block-form .idb-side { align-self: end; }
+.da-block-form .idb-submit { padding: 6px 14px; }
+.da-block-hint { grid-column: 1 / -1; }
+@media (max-width: 1100px) { .da-block-form { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.row-hh-second td { border-bottom: 1px solid var(--border); }

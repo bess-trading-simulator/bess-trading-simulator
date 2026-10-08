@@ -1,6 +1,6 @@
-import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay } from './types';
+import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid } from './types';
 import { OrderSide, GameMode } from './types';
-import { createClock, tick, getGateClosureTime, getSettlementPeriod, getUtcDayStart } from './clock';
+import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart } from './clock';
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery } from './battery';
@@ -10,7 +10,7 @@ import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast } from './marketDay';
-import { clearHourlyAuction, sanitizeBids } from './dayAheadAuction';
+import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
@@ -51,6 +51,12 @@ function dayAheadForDay(
     solarOutturn: today.solarOutturn,
     revealedPeriods: Math.max(0, getSettlementPeriod(currentTime) - 1),
     playerSchedule,
+    blocks: [],
+    blockResults: [],
+    hhBids: [],
+    hhResults: [],
+    hhGateClosureTime: getHalfHourGateClosureTime(currentTime),
+    hhAuctionOpen: false,
   };
 }
 
@@ -163,6 +169,10 @@ export function tickGameState(state: GameState): GameState {
         todayForecast: cleared ? s.nextDay.daForecast : undefined,
         todayResults: cleared ? s.dayAhead.results : undefined,
         todayBids: cleared ? s.dayAhead.bids : undefined,
+        todayBlocks: cleared ? s.dayAhead.blocks : undefined,
+        todayBlockResults: cleared ? s.dayAhead.blockResults : undefined,
+        todayHhBids: cleared ? s.dayAhead.hhBids : undefined,
+        todayHhResults: cleared ? s.dayAhead.hhResults : undefined,
       },
       nextDay: next,
       bm: createBmState(),
@@ -174,16 +184,37 @@ export function tickGameState(state: GameState): GameState {
   const currentSp = getSettlementPeriod(now) - 1;
   s = { ...s, dayAhead: { ...s.dayAhead, revealedPeriods: currentSp } };
 
-  // 4) DA gate closure: clear the blind auction, pay-as-cleared.
+  // 4) DA gate closure 09:20 UK: clear the blind hourly auction (orders + blocks),
+  //    pay-as-cleared. Then the EPEX 30-min auction opens until 15:30 UK.
   if (s.dayAhead.isAuctionOpen && s.dayAhead.gateClosureTime && now >= s.dayAhead.gateClosureTime) {
     const { results, positions } = clearHourlyAuction(s.dayAhead.bids, s.nextDay, now);
+    const blocks = clearBlocks(s.dayAhead.blocks ?? [], s.nextDay, 'hourly', now);
+    s = {
+      ...s,
+      nextDay: { ...s.nextDay, daForecastHH: buildHalfHourForecast(s.nextDay, Math.floor(s.nextDay.day / DAY_MS)) },
+      dayAhead: {
+        ...s.dayAhead,
+        results,
+        blockResults: blocks.results,
+        isAuctionOpen: false,
+        hhAuctionOpen: true,
+        playerSchedule: [...s.dayAhead.playerSchedule, ...positions, ...blocks.positions],
+      },
+    };
+  }
+
+  // 4b) 30-min auction gate closure 15:30 UK.
+  if (s.dayAhead.hhAuctionOpen && s.dayAhead.hhGateClosureTime && now >= s.dayAhead.hhGateClosureTime) {
+    const { results, positions } = clearHalfHourAuction(s.dayAhead.hhBids ?? [], s.nextDay, now);
+    const blocks = clearBlocks(s.dayAhead.blocks ?? [], s.nextDay, 'half', now);
     s = {
       ...s,
       dayAhead: {
         ...s.dayAhead,
-        results,
-        isAuctionOpen: false,
-        playerSchedule: [...s.dayAhead.playerSchedule, ...positions],
+        hhResults: results,
+        blockResults: [...(s.dayAhead.blockResults ?? []), ...blocks.results],
+        hhAuctionOpen: false,
+        playerSchedule: [...s.dayAhead.playerSchedule, ...positions, ...blocks.positions],
       },
     };
   }
@@ -310,6 +341,41 @@ export function submitDayAheadBids(state: GameState, bids: DayAheadBid[]): GameS
   if (!isAuctionOpen || (gateClosureTime && state.clock.currentTime >= gateClosureTime)) return state;
   const all = sanitizeBids([...state.dayAhead.bids, ...bids], state.battery.config.powerRatingMw);
   return { ...state, dayAhead: { ...state.dayAhead, bids: all } };
+}
+
+function auctionOpen(state: GameState, auction: 'hourly' | 'half'): boolean {
+  const d = state.dayAhead;
+  const now = state.clock.currentTime;
+  return auction === 'hourly'
+    ? d.isAuctionOpen && !(d.gateClosureTime && now >= d.gateClosureTime)
+    : Boolean(d.hhAuctionOpen) && !(d.hhGateClosureTime && now >= d.hhGateClosureTime);
+}
+
+/** Submit a (possibly linked) block order to the open hourly or 30-min auction. */
+export function submitBlockOrderAction(state: GameState, input: Omit<DaBlockOrder, 'id'>): GameState {
+  if (!auctionOpen(state, input.auction)) return state;
+  const existing = state.dayAhead.blocks ?? [];
+  if (validateBlock(input, existing, state.battery.config.powerRatingMw)) return state;
+  const n = existing.length + 1;
+  const id = `${input.auction === 'hourly' ? 'BH' : 'BQ'}${n}-${state.clock.currentTime % 100000}`;
+  return { ...state, dayAhead: { ...state.dayAhead, blocks: [...existing, { ...input, id }] } };
+}
+
+/** Cancel a block (and its linked children) while its auction is open. */
+export function cancelBlockOrderAction(state: GameState, id: string): GameState {
+  const block = (state.dayAhead.blocks ?? []).find(b => b.id === id);
+  if (!block || !auctionOpen(state, block.auction)) return state;
+  return { ...state, dayAhead: { ...state.dayAhead, blocks: (state.dayAhead.blocks ?? []).filter(b => b.id !== id && b.parentId !== id) } };
+}
+
+/** Replace your orders in the 30-min auction (open between 09:20 results and 15:30 UK). */
+export function submitHalfHourBidsAction(state: GameState, bids: HalfHourBid[]): GameState {
+  if (!auctionOpen(state, 'half')) return state;
+  const day = state.dayAhead.deliveryDay;
+  const net = Array.from({ length: 48 }, (_, sp) => state.dayAhead.playerSchedule
+    .filter(p => p.deliveryDay === day && p.period === sp)
+    .reduce((a, p) => a + (p.action === 'discharge' ? p.mw : -p.mw), 0));
+  return { ...state, dayAhead: { ...state.dayAhead, hhBids: sanitizeHalfHourBids(bids, state.battery.config.powerRatingMw, net) } };
 }
 
 /** Withdraw submitted DA orders (all, or those of one hour) before gate closure. */

@@ -483,3 +483,22 @@ real days (linear merit order vs a convex reality).
   ± band for the running SP), "Your imbalance" column (settled: short/long MWh, £,
   "helped system" vs "same as system"; running SP: pending "awaiting SIP"; upcoming:
   "⚠ projected short/long" from the SoC projection) and a projected-imbalance KPI.
+
+## S4.9 Block orders + EPEX GB 30-min auction (2026-10-08)
+Verified: EPEX GB 30-min DA auction closes 15:30 UK (D-1), results ~15:45; EPEX offers
+classic and linked block orders there (block parameters doc). Shown for both auctions.
+- `dayAheadAuction.ts`: `validateBlock`, `clearBlocks` (all-or-nothing on the AVERAGE
+  clearing; each SP settles at its own price; linked families: child only with parent,
+  profitable children can carry the parent if combined surplus ≥ 0), `buildHalfHourForecast`
+  (hourly price known after 09:20; intra-hour shape partly), `clearHalfHourAuction`,
+  `sanitizeHalfHourBids` (net position incl. hourly result stays within ±P).
+- Engine: 09:20 clears hourly orders + hourly blocks, sets `nextDay.daForecastHH`, opens
+  the 30-min auction; 15:30 UK (`getHalfHourGateClosureTime`) clears 30-min orders +
+  30-min blocks. Actions `submitBlockOrderAction`, `cancelBlockOrderAction`,
+  `submitHalfHourBidsAction`. Yesterday's blocks/30-min orders carried into today.
+- UI: DA tab views Hourly auction · 30-min auction · Today. `DaBlockOrders.tsx` (form with
+  link-to-parent, avg forecast check, list with results/reasons, cancel);
+  `DayAheadHalfHour.tsx` (hourly price + position, 30-min forecast, orders, "Shape within
+  hours" preset, feasibility). Today view lists all auction orders incl. blocks.
+- Interconnector/plant events exist as DA desk signals; unplanned trips DURING delivery
+  (SIP/ID impact) are still open.

@@ -92,18 +92,47 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
   // Yesterday's auction orders for today, with their outcome at the clearing price.
   const clearingH = hourlyPrices(dayAhead.forecastPrices);
   const forecastH = dayAhead.todayForecast ? hourlyPrices(dayAhead.todayForecast) : null;
-  const orders = (dayAhead.todayBids ?? [])
-    .map(b => {
+  type OrderRow = {
+    key: string; when: string; label: string; side: OrderSide; volumeMw: number;
+    limit: string; forecast: number | null; clearing: number; filled: boolean; reason: string; sortKey: number;
+  };
+  const spT = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
+  const verdict = (buy: boolean, clearing: number, limit: number, filled: boolean, what = 'Clearing') => filled
+    ? `${what} £${clearing.toFixed(2)} ${buy ? '≤ your max' : '≥ your min'} £${limit.toFixed(2)} → filled`
+    : `${what} £${clearing.toFixed(2)} ${buy ? 'above your max' : 'below your min'} £${limit.toFixed(2)} → not filled`;
+  const orders: OrderRow[] = [
+    // Hourly auction (09:20)
+    ...(dayAhead.todayBids ?? []).map((b, i) => {
       const clearing = clearingH[b.hour];
       const filled = bidFills(b, clearing);
-      const buy = b.side === OrderSide.BUY;
-      const reason = filled
-        ? `Clearing £${clearing.toFixed(2)} ${buy ? '≤ your max' : '≥ your min'} £${b.price.toFixed(2)} → filled at £${clearing.toFixed(2)}`
-        : `Clearing £${clearing.toFixed(2)} ${buy ? 'above your max' : 'below your min'} £${b.price.toFixed(2)} → not filled`;
-      return { ...b, clearing, forecast: forecastH?.[b.hour] ?? null, filled, reason };
-    })
-    .sort((a, b) => a.hour - b.hour || a.side.localeCompare(b.side));
-  const hourLabel = (h: number) => `${String(h).padStart(2, '0')}–${String((h + 1) % 24).padStart(2, '0')}`;
+      return {
+        key: `h${i}`, when: `${String(b.hour).padStart(2, '0')}–${String((b.hour + 1) % 24).padStart(2, '0')}`, label: 'Hourly',
+        side: b.side, volumeMw: b.volumeMw, limit: `${b.side === OrderSide.BUY ? 'max' : 'min'} £${b.price.toFixed(2)}`,
+        forecast: forecastH?.[b.hour] ?? null, clearing, filled, reason: verdict(b.side === OrderSide.BUY, clearing, b.price, filled), sortKey: b.hour * 2,
+      };
+    }),
+    // 30-min auction (15:30)
+    ...(dayAhead.todayHhResults ? (dayAhead.todayHhBids ?? []) : []).map((b, i) => {
+      const clearing = dayAhead.forecastPrices[b.sp] ?? 0;
+      const filled = bidFills(b, clearing);
+      return {
+        key: `q${i}`, when: spT(b.sp), label: '30-min',
+        side: b.side, volumeMw: b.volumeMw, limit: `${b.side === OrderSide.BUY ? 'max' : 'min'} £${b.price.toFixed(2)}`,
+        forecast: dayAhead.todayHhResults?.find(r => r.sp === b.sp)?.forecastPrice ?? null, clearing, filled,
+        reason: verdict(b.side === OrderSide.BUY, clearing, b.price, filled), sortKey: b.sp,
+      };
+    }),
+    // Blocks (both auctions)
+    ...(dayAhead.todayBlocks ?? []).map(b => {
+      const r = dayAhead.todayBlockResults?.find(x => x.id === b.id);
+      return {
+        key: b.id, when: `${spT(b.startSp)}–${spT(b.endSp + 1)}`,
+        label: `${b.auction === 'hourly' ? 'Hourly' : '30-min'} block ${b.id}${b.parentId ? ` ↳ ${b.parentId}` : ''}`,
+        side: b.side, volumeMw: b.volumeMw, limit: `${b.side === OrderSide.BUY ? 'max' : 'min'} avg £${b.price.toFixed(2)}`,
+        forecast: null, clearing: r?.avgClearing ?? 0, filled: Boolean(r?.accepted), reason: r?.reason ?? 'no result', sortKey: b.startSp,
+      };
+    }),
+  ].sort((a, b) => a.sortKey - b.sortKey);
 
   const chartData = rows.map(r => ({
     sp: spLabel(r.sp), price: r.price, forecast: r.forecast ?? null, net: r.net, soc: soc[r.sp],
@@ -194,7 +223,7 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
 
       <div className="da-bid-section">
         <h4 className="da-section-title">
-          Yesterday's auction · your orders for today
+          Yesterday's auctions · your orders for today
           <HelpIcon text="Every order you submitted in yesterday's auction for today. Buy (charge) fills if the clearing price is at or below your max; sell (discharge) fills if it is at or above your min. Filled orders settle at the CLEARING price, not your limit." />
         </h4>
         {orders.length === 0 ? (
@@ -204,23 +233,21 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
         ) : (
           <table className="data-table bid-table da-orders-table">
             <thead>
-              <tr><th>Hour</th><th>Order</th><th>Your limit</th><th>Forecast</th><th>Clearing</th><th>Result</th></tr>
+              <tr><th>Time</th><th>Auction</th><th>Order</th><th>Your limit</th><th>Forecast</th><th>Clearing</th><th>Result</th></tr>
             </thead>
             <tbody>
-              {orders.map((o, i) => (
-                <tr key={i} className={o.filled ? '' : 'muted'}>
-                  <td>{hourLabel(o.hour)}</td>
+              {orders.map(o => (
+                <tr key={o.key} className={o.filled ? '' : 'muted'}>
+                  <td>{o.when}</td>
+                  <td className="muted">{o.label}</td>
                   <td style={{ color: o.side === OrderSide.BUY ? 'var(--charge)' : 'var(--discharge)' }}>
                     {o.side === OrderSide.BUY ? 'Buy · charge' : 'Sell · discharge'} {o.volumeMw} MW
                   </td>
-                  <td>{o.side === OrderSide.BUY ? 'max' : 'min'} £{o.price.toFixed(2)}</td>
+                  <td>{o.limit}</td>
                   <td className="muted">{o.forecast == null ? '—' : `£${o.forecast.toFixed(2)}`}</td>
                   <td>£{o.clearing.toFixed(2)}</td>
                   <td className={o.filled ? 'positive' : 'negative'} title={o.reason} style={{ cursor: 'help' }}>
                     {o.filled ? '✓ filled' : '✗ not filled'}
-                    <small className="muted"> · {o.filled
-                      ? `${o.side === OrderSide.BUY ? 'paid' : 'received'} £${o.clearing.toFixed(2)}`
-                      : `£${Math.abs(o.clearing - o.price).toFixed(2)} ${o.side === OrderSide.BUY ? 'above max' : 'below min'}`}</small>
                   </td>
                 </tr>
               ))}
