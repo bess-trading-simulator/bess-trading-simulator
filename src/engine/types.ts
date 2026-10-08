@@ -253,6 +253,8 @@ export interface DayAheadState {
   /** Yesterday's auction for TODAY: the desk forecast it was bid on, and its results */
   todayForecast?: number[];
   todayResults?: AuctionResult[];
+  /** The orders you submitted in yesterday's auction for TODAY */
+  todayBids?: DayAheadBid[];
   nextDeliveryDay: number;
   /** TODAY's DA prices (cleared in yesterday's auction; real days: Market Index Price) */
   forecastPrices: number[];

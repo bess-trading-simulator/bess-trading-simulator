@@ -7401,3 +7401,6 @@ body {
 
 /* Day-ahead: auction (tomorrow) vs today's delivery */
 .da-view-toggle { display: flex; gap: 18px; padding: 10px 16px 0; }
+.da-section-title { margin: 14px 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.da-section-empty { font-size: 12px; padding: 4px 0 8px; }
+.da-orders-table { margin-bottom: 8px; }

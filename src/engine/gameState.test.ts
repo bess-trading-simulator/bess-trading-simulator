@@ -77,7 +77,14 @@ describe('day-ahead auction (hourly, blind, pay-as-cleared)', () => {
 
   it('after midnight the auction day becomes today with its cleared prices', () => {
     const next = day(D0 + DAY, { daClearing: flat(77) });
-    const s = step(fresh(day(D0), next), 48);
+    const bids = [
+      { hour: 2, side: OrderSide.BUY, volumeMw: 20, price: 80 },  // 77 ≤ 80 → filled
+      { hour: 5, side: OrderSide.SELL, volumeMw: 20, price: 90 }, // 77 < 90 → not filled
+    ];
+    const s = step(submitDayAheadBids(fresh(day(D0), next), bids), 48);
+    expect(s.dayAhead.todayBids).toEqual(bids);
+    expect(s.dayAhead.todayResults?.find(r => r.hour === 2)?.buyFilled).toBe(true);
+    expect(s.dayAhead.todayResults?.find(r => r.hour === 5)?.sellFilled).toBe(false);
     expect(s.clock.currentTime).toBe(D0 + DAY);
     expect(s.dayAhead.forecastPrices[10]).toBe(77);
     expect(s.dayAhead.isAuctionOpen).toBe(true);
