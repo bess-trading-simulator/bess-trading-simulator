@@ -82,11 +82,20 @@ export default function BmPanel({ state, onSetBmOrder }: Props) {
         <span className="isp-label">BOAs today</span>
         {accepted.length === 0
           ? <span className="muted"> none yet</span>
-          : accepted.slice(0, 6).map((a, i) => (
-            <span key={i} className={`bm-boa ${a.kind}`}>
-              {spLabel(a.sp)} {a.kind === 'offer' ? `+${a.mw} MW @ £${a.price.toFixed(0)}` : `−${a.mw} MW @ £${a.price.toFixed(0)}`}
-            </span>
-          ))}
+          : accepted.slice(0, 8).map((a, i) => {
+            // A BOA is executed in its SP (dispatched at the SP start) and paid at your price.
+            const cash = (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price;
+            const status = a.sp < curSp ? 'delivered' : a.sp === curSp ? 'running' : 'scheduled';
+            return (
+              <span key={i} className={`bm-boa ${a.kind}`} title={`${a.kind === 'offer' ? 'Discharged' : 'Charged'} ${a.mw} MW for 30 min = ${(a.mw * 0.5).toFixed(1)} MWh at your price £${a.price.toFixed(2)} (pay-as-bid). Counts as a contract — no imbalance.`}>
+                {spLabel(a.sp)} {a.kind === 'offer' ? `+${a.mw} MW` : `−${a.mw} MW`} @ £{a.price.toFixed(0)} · {status} · {cash >= 0 ? '+' : '−'}£{Math.abs(cash).toFixed(0)}
+              </span>
+            );
+          })}
+        {accepted.length > 0 && (() => {
+          const total = accepted.reduce((s, a) => s + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
+          return <span className="bm-boa-total">BM cash today: <strong className={total >= 0 ? 'positive' : 'negative'}>{total >= 0 ? '+' : '−'}£{Math.abs(total).toFixed(0)}</strong></span>;
+        })()}
       </div>
     </div>
   );

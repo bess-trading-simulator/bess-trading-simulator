@@ -337,7 +337,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
         {/* Performance bar — compact retrospective line (review, not decision) */}
         <div className="im-perf-bar">
           <span className="im-perf-item">
-            <span className="im-perf-label">Today P&amp;L</span>
+            <span className="im-perf-label" title="Imbalance settlements today only (deliberate deviations + undeliverable contract volume at SIP). BM acceptances, DA and intraday are settled as contracts and shown in their own views.">Imbalance P&amp;L</span>
             <strong className={dailyPnL >= 0 ? 'positive' : 'negative'}>
               {dailyPnL >= 0 ? '+' : '−'}£{Math.abs(dailyPnL).toFixed(0)}
             </strong>
