@@ -33,7 +33,7 @@ export default function App() {
   const {
     state, dataSource, togglePause, setSpeed, stepForward,
     chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid, configureBattery,
-    placeIntradayOrder, cancelIntradayOrder, submitBlockOrder, cancelBlockOrder, submitHalfHourBids,
+    placeIntradayOrder, cancelIntradayOrder, setBlockOrders, submitHalfHourBids,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, loadSavedState, reset,
   } = useGameState();
@@ -263,8 +263,7 @@ export default function App() {
               battery={state.battery}
               onSubmitBids={placeDayAheadBids}
               onWithdrawBids={withdrawDayAheadBid}
-              onSubmitBlock={submitBlockOrder}
-              onCancelBlock={cancelBlockOrder}
+              onSetBlocks={setBlockOrders}
               onSubmitHalfHourBids={submitHalfHourBids}
             />
             <SupportPanels state={state} lessonId={2} compact />
