@@ -234,7 +234,7 @@ export default function App() {
 
       <main className="dashboard-bess">
         <ScenarioBanner state={state} />
-        {(view === 'imbalance' || view === 'intraday') && <LiveNews events={state.events} now={state.clock.currentTime} />}
+        {(view === 'imbalance' || view === 'intraday' || view === 'dayahead') && <LiveNews events={state.events} now={state.clock.currentTime} />}
         {view === 'imbalance' && (
           <div className="grid-main-full">
             <ImbalanceTrading

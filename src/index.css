@@ -7447,3 +7447,4 @@ body {
 .live-news-item.latest { color: var(--text); font-weight: 600; }
 .live-news-item.outage.latest { color: var(--discharge); }
 .live-news-time { font-family: var(--font-mono); font-size: 11px; opacity: 0.8; }
+.sp-news { color: var(--discharge); cursor: help; }
