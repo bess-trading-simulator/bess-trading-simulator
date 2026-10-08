@@ -9,7 +9,7 @@ import type { TradePosition } from './ukMarket';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
-import { syntheticMarketDay, templatedMarketDay, scenarioMarketDay } from './marketDay';
+import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withFundamentalForecast, todayFromState } from './marketDay';
 import { clearHourlyAuction, sanitizeBids } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
@@ -54,13 +54,6 @@ function dayAheadForDay(
   };
 }
 
-/** Synthetic next day; shaped like today when today is real (keeps price levels plausible). */
-function nextSyntheticDay(today: MarketDay, seed: number): MarketDay {
-  const day = today.day + DAY_MS;
-  return today.source === 'real'
-    ? templatedMarketDay(day, today.daClearing, seed)
-    : syntheticMarketDay(day, seed);
-}
 
 function createBmState(): BmState {
   return { offers: [], accepted: [] };
@@ -72,7 +65,7 @@ export function createGameState(): GameState {
   const { price: initialPrice, newState: newPriceGen } = generateNextHour(priceGen, clock.currentTime);
   const day = getUtcDayStart(clock.currentTime);
   const today = syntheticMarketDay(day, priceGen.seed);
-  const next = syntheticMarketDay(day + DAY_MS, priceGen.seed + 1);
+  const next = nextDayFrom(today, priceGen.seed + 1);
 
   const state: InternalState = {
     clock: { ...clock, speed: 'slow' },
@@ -100,7 +93,8 @@ export function createGameState(): GameState {
  * Start a fresh session on `today` (00:00) with `next` as the auction's
  * delivery day. Used for live data and scenarios.
  */
-export function loadMarketDays(state: GameState, today: MarketDay, next: MarketDay): GameState {
+export function loadMarketDays(state: GameState, today: MarketDay, nextIn: MarketDay): GameState {
+  const next = nextIn.forecastModel ? nextIn : withFundamentalForecast(nextIn, today);
   const clock = createClock(new Date(today.day));
   const firstSip = today.sipOutturn[0] ?? 0;
   const initialPrice = {
@@ -135,7 +129,7 @@ export function loadMarketDays(state: GameState, today: MarketDay, next: MarketD
  */
 export function replaceNextDay(state: GameState, next: MarketDay): GameState {
   if (next.day !== state.nextDay.day || !state.dayAhead.isAuctionOpen) return state;
-  return { ...state, nextDay: next };
+  return { ...state, nextDay: withFundamentalForecast(next, todayFromState(state)) };
 }
 
 export function tickGameState(state: GameState): GameState {
@@ -159,11 +153,16 @@ export function tickGameState(state: GameState): GameState {
   const currentDayStart = getUtcDayStart(now);
   if (currentDayStart !== prevDay) {
     const today = s.nextDay.day === currentDayStart ? s.nextDay : syntheticMarketDay(currentDayStart, priceGenState.seed + newPriceGen.tickCount);
-    const next = nextSyntheticDay(today, priceGenState.seed + newPriceGen.tickCount + 1);
+    const next = nextDayFrom(today, priceGenState.seed + newPriceGen.tickCount + 1);
     const carried = s.dayAhead.playerSchedule.filter(p => !p.delivered && p.deliveryDay >= currentDayStart);
+    const cleared = s.nextDay.day === currentDayStart;
     s = {
       ...s,
-      dayAhead: dayAheadForDay(today, next, now, carried),
+      dayAhead: {
+        ...dayAheadForDay(today, next, now, carried),
+        todayForecast: cleared ? s.nextDay.daForecast : undefined,
+        todayResults: cleared ? s.dayAhead.results : undefined,
+      },
       nextDay: next,
       bm: createBmState(),
       ledger: s.ledger.filter(e => e.deliveryDay >= currentDayStart - DAY_MS),
@@ -443,7 +442,7 @@ export function loadScenario(state: GameState, scenario: { daPrices: number[]; s
   const day = Date.parse(scenario.date + 'T00:00:00Z');
   const today = scenarioMarketDay(day, scenario);
   const seed = scenario.daPrices.reduce((a, p) => a + Math.abs(Math.round(p)), 0);
-  const next = templatedMarketDay(day + DAY_MS, scenario.daPrices, seed + 1);
+  const next = nextDayFrom(today, seed + 1);
   return loadMarketDays(state, today, next);
 }
 

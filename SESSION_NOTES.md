@@ -428,3 +428,22 @@ D+1 intraday products see it). At midnight nextDay becomes today.
   BM assessment uses actual NIV; EPEX 15:30 half-hourly auction not modelled.
 - Imbalance view's expected SIP still uses the simplified model on real days (by design
   → realistic slippage), but could use a better estimator.
+
+## S4.5 Fundamental DA forecast + two DA views (2026-10-08)
+- `marketDay.ts › withFundamentalForecast(next, today)`: forecast(sp) = today's cleared
+  DA price + β × Δresidual load (demand − wind − solar day-ahead forecasts, next vs
+  today). β = OLS of today's prices on today's residual load, shrunk 50 % toward a
+  £5/GW prior, clamped 1.5–12. Components stored in `MarketDay.forecastModel`.
+- `nextDayFrom(today, seed)` replaces the old templated/synthetic next day: perturbs
+  today's wind/demand/solar forecasts, adds outturn errors + NIV, and sets the actual
+  price = today + β_true × ΔRL + market shock (gas/carbon level, AR noise, 3 % events).
+  `MarketDay.truth` keeps β_true/shock so the UI can explain the model error.
+- Real days: forecast built the same way from the previous real day (in
+  `loadMarketDays` / `replaceNextDay`).
+- DA tab now has two views: **Auction · bid for D+1** (columns Today £, Δ res. load,
+  Forecast with hover breakdown; after clearing: clearing, model error + explanation)
+  and **Today · delivery** (`DayAheadToday.tsx`: today's prices vs the forecast you bid
+  on, DA/ID/net contract, metered, imbalance per SP, status). `dayAhead.todayForecast`
+  / `todayResults` carried over at midnight.
+- Fixed: chart data key named `ref` crashed React (Recharts passes data fields as props).
+- Old autosaves without `nextDay.forecastModel` are discarded. 44 tests green.

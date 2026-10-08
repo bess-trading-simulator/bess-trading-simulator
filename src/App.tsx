@@ -258,6 +258,7 @@ export default function App() {
             <DayAheadAuction
               dayAhead={state.dayAhead}
               nextDay={state.nextDay}
+              ledger={state.ledger}
               currentTime={state.clock.currentTime}
               battery={state.battery}
               onSubmitBids={placeDayAheadBids}

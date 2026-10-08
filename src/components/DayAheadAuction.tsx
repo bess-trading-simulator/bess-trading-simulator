@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import type { DayAheadBid, DayAheadState, MarketDay } from '../engine/types';
+import type { DayAheadBid, DayAheadState, MarketDay, SettlementEntry } from '../engine/types';
+import DayAheadToday from './DayAheadToday';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
@@ -11,6 +12,7 @@ import { CheckCircle } from 'lucide-react';
 interface Props {
   dayAhead: DayAheadState;
   nextDay: MarketDay;
+  ledger?: SettlementEntry[];
   currentTime: number;
   battery: BatteryState;
   onSubmitBids: (bids: DayAheadBid[]) => void;
@@ -45,7 +47,7 @@ function bidsFromDraft(draft: Record<number, Draft>): DayAheadBid[] {
   return bids;
 }
 
-export default function DayAheadAuction({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids }: Props) {
+function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids }: Props) {
   const { isAuctionOpen, results, playerSchedule, deliveryDay, bids: submittedBids } = dayAhead;
   const [draft, setDraft] = useState<Record<number, Draft>>(() => draftFromBids(submittedBids));
   const [justSubmitted, setJustSubmitted] = useState(false);
@@ -66,6 +68,31 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
     .format(new Date(getGateClosureTime(currentTime)));
 
   const forecast = useMemo(() => hourlyPrices(nextDay.daForecast), [nextDay.daForecast]);
+  const clearingH = useMemo(() => hourlyPrices(nextDay.daClearing), [nextDay.daClearing]);
+  // Fundamental model components per hour (mean of the two half-hours).
+  const model = nextDay.forecastModel;
+  const hourlyOf = (arr?: number[]) => (arr ? hourlyPrices(arr) : new Array<number>(DA_HOURS).fill(0));
+  const refH = hourlyOf(model?.ref);
+  const demH = hourlyOf(model?.demandDelta);
+  const windH = hourlyOf(model?.windDelta);
+  const solarH = hourlyOf(model?.solarDelta);
+  const shockH = hourlyOf(nextDay.truth?.shock);
+  const beta = model?.beta ?? 0;
+  const gw = (mw: number) => `${mw >= 0 ? '+' : '−'}${Math.abs(mw / 1000).toFixed(1)} GW`;
+  const pounds = (v: number) => `${v >= 0 ? '+' : '−'}£${Math.abs(v).toFixed(2)}`;
+  const dRl = (h: number) => demH[h] - windH[h] - solarH[h];
+  const driverText = (h: number) =>
+    `Today's DA £${refH[h].toFixed(2)} · demand ${gw(demH[h])}, wind ${gw(windH[h])}, solar ${gw(solarH[h])} `
+    + `→ residual load ${gw(dRl(h))} × £${beta.toFixed(1)}/GW = ${pounds(beta * dRl(h) / 1000)} → forecast £${forecast[h].toFixed(2)}`;
+  const errorText = (h: number) => {
+    const err = clearingH[h] - forecast[h];
+    if (nextDay.truth) {
+      const slope = (nextDay.truth.beta - beta) * dRl(h) / 1000;
+      return `Model error ${pounds(err)}: merit order was £${nextDay.truth.beta.toFixed(1)}/GW vs your £${beta.toFixed(1)}/GW (${pounds(slope)}), `
+        + `market shock — gas/carbon, outages, interconnectors, other bids (${pounds(shockH[h])}).`;
+    }
+    return `Model error ${pounds(err)}: not explained by residual load — gas/carbon, plant outages, interconnector flows and other participants' bids.`;
+  };
   const resultByHour = useMemo(() => new Map(results.map(r => [r.hour, r])), [results]);
   const sorted = [...forecast].sort((a, b) => a - b);
   const lowT = sorted[Math.floor(DA_HOURS * 0.25)] ?? 0;
@@ -132,7 +159,8 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
   const chartData = forecast.map((f, h) => ({
     hour: `${String(h).padStart(2, '0')}:00`,
     forecast: f,
-    clearing: isAuctionOpen ? null : (resultByHour.get(h)?.clearingPrice ?? hourlyPrices(nextDay.daClearing)[h]),
+    clearing: isAuctionOpen ? null : (resultByHour.get(h)?.clearingPrice ?? clearingH[h]),
+    todayDa: model ? refH[h] : null,
     socPct: socPct[h],
     isLow: f <= lowT,
     isHigh: f >= highT,
@@ -190,7 +218,7 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3>Day-Ahead Auction · hourly</h3>
-          <HelpIcon text="Blind, uniform-price auction for the next delivery day (EPEX GB 09:20 UK style, HOURLY products). Per hour you can bid to BUY (charge) up to a max price and/or SELL (discharge) down to a min price — a 2-step bid curve. At gate closure the auction clears: an order fills only if the clearing price meets its limit, and fills settle at the CLEARING price (pay-as-cleared), not your limit. You don't see the clearing price before — only the desk forecast, which has a realistic error. On real Elexon days the actual price is the Market Index Price (MID) as DA proxy." />
+          <HelpIcon text="Blind, uniform-price auction for the next delivery day (EPEX GB 09:20 UK style, HOURLY products). Per hour you can bid to BUY (charge) up to a max price and/or SELL (discharge) down to a min price — a 2-step bid curve. At gate closure the auction clears: an order fills only if the clearing price meets its limit, and fills settle at the CLEARING price (pay-as-cleared), not your limit. You don't see the clearing price before — only the desk forecast: today's price for the same hour, adjusted by how much residual load (demand − wind − solar) changes tomorrow × the merit-order slope fitted on today. Hover a row for the breakdown; after clearing, hover the result to see why the forecast was off. On real Elexon days the actual price is the Market Index Price (MID) as DA proxy." />
           <span className="da-delivery-badge">
             Delivery <strong>{formatDeliveryDay(deliveryDay)}</strong> · {sourceLabel}
           </span>
@@ -239,10 +267,11 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
             <div className="da-forecast-head">
               <h4>
                 Hourly price · {isAuctionOpen ? 'desk forecast' : 'forecast vs clearing'}
-                <HelpIcon text="Bars = desk forecast per hourly product (blue = cheapest quarter, orange = dearest quarter). After gate closure the line shows the actual clearing price — compare to see your forecast error. Lavender = projected SoC at the end of each hour, assuming all your orders fill." />
+                <HelpIcon text="Bars = desk forecast per hourly product (blue = cheapest quarter, orange = dearest quarter). Dashed grey = today's cleared DA price, the forecast's starting point. After gate closure the line shows the actual clearing price — compare to see your forecast error. Lavender = projected SoC at the end of each hour, assuming all your orders fill." />
               </h4>
               <div className="da-chart-legend inline">
                 <span className="legend-item"><span className="legend-bar da-bar" /> Forecast</span>
+                {model && <span className="legend-item"><span className="legend-line" style={{ borderTop: '2px dashed #8b95a8', height: 0 }} /> Today's DA</span>}
                 {!isAuctionOpen && <span className="legend-item"><span className="legend-line id-line" /> Clearing</span>}
                 <span className="legend-item"><span className="legend-line soc-line" /> SoC%</span>
               </div>
@@ -266,6 +295,7 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
                     <Cell key={i} fill={e.isLow ? '#007be2' : e.isHigh ? '#ff874b' : '#9ca3af'} fillOpacity={hovered === i ? 1 : 0.6} />
                   ))}
                 </Bar>
+                {model && <Line yAxisId="price" type="monotone" dataKey="todayDa" stroke="#8b95a8" strokeWidth={1.5} strokeDasharray="4 3" dot={false} name="Today's DA" isAnimationActive={false} />}
                 {!isAuctionOpen && <Line yAxisId="price" type="monotone" dataKey="clearing" stroke="#76b8ef" strokeWidth={2} dot={{ r: 2 }} name="Clearing" isAnimationActive={false} />}
                 <Line yAxisId="soc" type="stepAfter" dataKey="socPct" stroke="#c7b4f8" strokeWidth={2} dot={false} name="Projected SoC" isAnimationActive={false} />
               </ComposedChart>
@@ -281,6 +311,11 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
               <div className="da-status-sub">
                 {isAuctionOpen ? `Gate closes ${gateTimeUk} UK · ${gateHours}h left` : 'Positions are locked · trade adjustments intraday'}
               </div>
+              {model && (
+                <div className="da-status-sub">
+                  Desk model: today's price + £{beta.toFixed(1)}/GW × Δ residual load
+                </div>
+              )}
               <div className="da-status-sub">
                 {submittedBids.length} order{submittedBids.length === 1 ? '' : 's'} submitted
                 {justSubmitted && !isDirty && <span className="da-submitted"> <CheckCircle size={12} /> sent</span>}
@@ -321,6 +356,8 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
             <thead>
               <tr>
                 <th>Hour</th>
+                <th title="Today's cleared DA price for the same hour — the forecast's reference">Today £</th>
+                <th title="Change in residual load (demand − wind − solar) vs today, and its price effect">Δ res. load</th>
                 <th>Forecast</th>
                 <th>Buy MW</th>
                 <th>Max £</th>
@@ -343,7 +380,11 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
                     onMouseLeave={() => setHovered(null)}
                   >
                     <td>{hourLabel(h)}</td>
-                    <td className="muted">£{f.toFixed(2)}</td>
+                    <td className="muted">{model ? `£${refH[h].toFixed(2)}` : '—'}</td>
+                    <td className="muted" title={model ? driverText(h) : 'No driver forecasts — persistence forecast'} style={{ cursor: 'help' }}>
+                      {model ? <>{gw(dRl(h))} <small>({pounds(beta * dRl(h) / 1000)})</small></> : '—'}
+                    </td>
+                    <td title={model ? driverText(h) : undefined}>£{f.toFixed(2)}</td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.buyMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyMw', e.target.value)} placeholder="" /></td>
                     <td><input className="input" type="number" step={0.5} value={d.buyPx} disabled={!isAuctionOpen} onChange={e => setField(h, 'buyPx', e.target.value)} placeholder="—" /></td>
                     <td><input className="input" type="number" min={0} max={P} step={1} value={d.sellMw} disabled={!isAuctionOpen} onChange={e => setField(h, 'sellMw', e.target.value)} placeholder="" /></td>
@@ -353,13 +394,13 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
                         ? (expected || '—')
                         : r
                           ? (
-                            <span>
-                              £{r.clearingPrice.toFixed(2)} ·{' '}
+                            <span title={errorText(h)} style={{ cursor: 'help' }}>
+                              £{r.clearingPrice.toFixed(2)} <small>({pounds(r.clearingPrice - r.forecastPrice)})</small> ·{' '}
                               {r.buyMw > 0 && <span className={r.buyFilled ? 'positive' : 'negative'}>Buy {r.buyFilled ? 'filled' : 'not filled'} </span>}
                               {r.sellMw > 0 && <span className={r.sellFilled ? 'positive' : 'negative'}>Sell {r.sellFilled ? 'filled' : 'not filled'}</span>}
                             </span>
                           )
-                          : `£${hourlyPrices(nextDay.daClearing)[h].toFixed(2)}`}
+                          : <span title={errorText(h)} style={{ cursor: 'help' }}>£{clearingH[h].toFixed(2)} <small>({pounds(clearingH[h] - f)})</small></span>}
                     </td>
                   </tr>
                 );
@@ -368,6 +409,30 @@ export default function DayAheadAuction({ dayAhead, nextDay, currentTime, batter
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Day-ahead has two faces: the auction you bid in today (for TOMORROW), and
+ * today's delivery of the schedule you won in YESTERDAY's auction.
+ */
+export default function DayAheadAuction(props: Props) {
+  const [view, setView] = useState<'auction' | 'today'>('auction');
+  const today = getUtcDayStart(props.currentTime);
+  return (
+    <div className="da-views">
+      <div className="da-view-toggle">
+        <button className={`hdr-tab ${view === 'auction' ? 'active' : ''}`} onClick={() => setView('auction')}>
+          Auction · bid for {formatDeliveryDay(props.dayAhead.deliveryDay)}
+        </button>
+        <button className={`hdr-tab ${view === 'today' ? 'active' : ''}`} onClick={() => setView('today')}>
+          Today · delivery {formatDeliveryDay(today)}
+        </button>
+      </div>
+      {view === 'auction'
+        ? <AuctionView {...props} />
+        : <DayAheadToday dayAhead={props.dayAhead} ledger={props.ledger ?? []} battery={props.battery} currentTime={props.currentTime} />}
     </div>
   );
 }

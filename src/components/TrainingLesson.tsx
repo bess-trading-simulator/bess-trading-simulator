@@ -528,6 +528,7 @@ function LessonMain({ props, lessonId, focus, assessmentMode, level }: {
           <DayAheadAuction
             dayAhead={state.dayAhead}
             nextDay={state.nextDay}
+            ledger={state.ledger}
             currentTime={state.clock.currentTime}
             battery={state.battery}
             onSubmitBids={props.onSubmitBids}

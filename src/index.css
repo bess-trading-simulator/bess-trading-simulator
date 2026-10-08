@@ -7398,3 +7398,6 @@ body {
 .idb-submit.buy { background: var(--charge); border-color: var(--charge); color: #fff; }
 .idb-submit.sell { background: var(--discharge); border-color: var(--discharge); color: #fff; }
 .idb-submit:disabled { opacity: 0.45; }
+
+/* Day-ahead: auction (tomorrow) vs today's delivery */
+.da-view-toggle { display: flex; gap: 18px; padding: 10px 16px 0; }
