@@ -18,8 +18,10 @@ const DAY_MS = 86_400_000;
 
 /** Rules of thumb (also shown to the player). */
 export const RULES = {
-  /** £/MWh per GW of residual load (merit-order slope) */
+  /** £/MWh per GW of residual load at a ~£100 price (merit-order slope) */
   meritSlope: 5,
+  /** The merit order is convex: steeper when prices are high (peaker plant on the margin). */
+  slopeAt: (price: number) => 5 * Math.max(0.6, Math.min(2.5, Math.abs(price) / 100)),
   /** GW of extra demand per °C colder than normal */
   demandPerDegree: 0.6,
   /** share of the price set by gas plant in an SP (peaks/daytime ≈ gas-marginal) */
@@ -51,27 +53,27 @@ const INTERCONNECTORS = ['IFA', 'IFA2', 'BritNed', 'NSL', 'Nemo', 'ElecLink', 'V
 function makeEvents(rng: () => number, prices: number[]): DeskEvent[] {
   const events: DeskEvent[] = [];
   const window = () => {
-    const start = 10 + Math.floor(rng() * 30);
-    return { startSp: start, endSp: Math.min(47, start + 3 + Math.floor(rng() * 7)) };
+    const start = 8 + Math.floor(rng() * 34);
+    return { startSp: start, endSp: Math.min(47, start + 3 + Math.floor(rng() * 9)) };
   };
   const level = Math.max(30, prices.reduce((a, b) => a + Math.abs(b), 0) / prices.length);
   const r = rng();
-  if (r < 0.18) {
+  if (r < 0.25) {
     const w = window();
     const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
     events.push({ kind: 'interconnector', ...w, confirmed: rng() < 0.8,
       headline: `${ic} interconnector: import capacity cut ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
-      effect: round2(level * (0.1 + rng() * 0.2)) });
-  } else if (r < 0.32) {
+      effect: round2(level * (0.15 + rng() * 0.25)) });
+  } else if (r < 0.45) {
     const w = window();
     events.push({ kind: 'outage', ...w, confirmed: rng() < 0.75,
       headline: `CCGT unit tripped / unavailable ${spTime(w.startSp)}–${spTime(w.endSp + 1)} (REMIT)`,
-      effect: round2(level * (0.08 + rng() * 0.15)) });
-  } else if (r < 0.42) {
+      effect: round2(level * (0.12 + rng() * 0.2)) });
+  } else if (r < 0.57) {
     const w = window();
     events.push({ kind: 'imports', ...w, confirmed: rng() < 0.7,
       headline: `Continental prices low: higher GB imports expected ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
-      effect: -round2(level * (0.06 + rng() * 0.12)) });
+      effect: -round2(level * (0.08 + rng() * 0.14)) });
   }
   // False alarm: plausible headline, no effect, always unconfirmed.
   if (rng() < 0.15) {
@@ -100,10 +102,10 @@ export function withDeskForecast(day: MarketDay, seed: number): MarketDay {
   const events = makeEvents(rng, actual);
 
   const gas = actual.map((p, sp) => round2((gasTrue / 100) * RULES.gasShare(sp) * Math.abs(p)));
-  const wind = windTrue.map((mw) => round2(-RULES.meritSlope * mw / 1000));
-  const temperature = actual.map((_, sp) => round2(-tempTrue * RULES.demandPerDegree * RULES.meritSlope * RULES.peakWeight(sp)));
+  const wind = windTrue.map((mw, sp) => round2(-RULES.slopeAt(actual[sp]) * mw / 1000));
+  const temperature = actual.map((p, sp) => round2(-tempTrue * RULES.demandPerDegree * RULES.slopeAt(p) * RULES.peakWeight(sp)));
   const event = actual.map((_, sp) => round2(events.reduce((a, e) => a + (sp >= e.startSp && sp <= e.endSp ? e.effect : 0), 0)));
-  const noise = actual.map((p) => round2(gauss(rng) * Math.max(2, Math.abs(p) * 0.02)));
+  const noise = actual.map((p) => round2(gauss(rng) * Math.max(2, Math.abs(p) * 0.03)));
   const errors: ForecastErrorBreakdown = { gas, wind, temperature, event, noise };
 
   const daForecast = actual.map((p, sp) => round2(p - gas[sp] - wind[sp] - temperature[sp] - event[sp] - noise[sp]));
