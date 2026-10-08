@@ -476,3 +476,10 @@ real days (linear merit order vs a convex reality).
   (`generateGBDayAhead`: 35 + 1.25 × shape, wind effect −60 × windPct).
 - MID = Elexon BMRS dataset, provided by EPEX (APXMIDP): volume-weighted short-term
   traded price per SP, used in imbalance pricing; DA proxy, not the auction result.
+
+## S4.8 Today view: system length + projected imbalance (2026-10-08)
+- `nivForecastError` / `NIV_FORECAST_BAND` moved from ImbalanceTrading into `ukMarket.ts`.
+- DayAheadToday: "System" column (actual NIV short/long + SIP once published, forecast
+  ± band for the running SP), "Your imbalance" column (settled: short/long MWh, £,
+  "helped system" vs "same as system"; running SP: pending "awaiting SIP"; upcoming:
+  "⚠ projected short/long" from the SoC projection) and a projected-imbalance KPI.

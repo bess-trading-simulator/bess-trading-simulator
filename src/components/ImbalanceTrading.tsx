@@ -3,7 +3,7 @@ import type { GameState } from '../engine/types';
 import { MarketType, OrderSide } from '../engine/types';
 import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay } from '../engine/clock';
 import { deviationRoom, findEntry } from '../engine/settlement';
-import { imbalanceSettlementPrice } from '../engine/ukMarket';
+import { imbalanceSettlementPrice, nivForecastError, NIV_FORECAST_BAND } from '../engine/ukMarket';
 import HelpIcon from './HelpIcon';
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid,
@@ -18,16 +18,6 @@ interface Props {
 }
 
 const HISTORY_LOOKBACK = 12;
-
-// NIV sign follows Elexon: + = system short, − = system long (MWh per SP).
-// NIV forecasts carry uncertainty: you see a forecast ± band, but the system
-// settles at the actual SIP revealed after the SP. This deterministic error
-// (stable per SP+day) realises as slippage between your expected and settled price.
-const NIV_FORECAST_BAND = 220; // ±MWh shown as the uncertainty band
-function nivForecastError(sp: number, dayIdx: number): number {
-  const x = Math.sin((sp + 1) * 12.9898 + dayIdx * 78.233) * 43758.5453;
-  return ((x - Math.floor(x)) - 0.5) * 2 * NIV_FORECAST_BAND; // uniform ±BAND
-}
 
 function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
   niv: number[];

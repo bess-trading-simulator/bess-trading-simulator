@@ -108,6 +108,16 @@ export function imbalanceSettlementPrice(daPrice: number, niv: number): number {
   return Math.round((daPrice + linear + stress) * 100) / 100;
 }
 
+// NIV sign follows Elexon: + = system short, − = system long (MWh per SP).
+// During an SP traders only have a NIV FORECAST: you see forecast ± band, the
+// system settles at the actual NIV/SIP published after the SP. This
+// deterministic error (stable per SP + day) is that forecast error.
+export const NIV_FORECAST_BAND = 220; // ±MWh shown as the uncertainty band
+export function nivForecastError(sp: number, dayIdx: number): number {
+  const x = Math.sin((sp + 1) * 12.9898 + dayIdx * 78.233) * 43758.5453;
+  return ((x - Math.floor(x)) - 0.5) * 2 * NIV_FORECAST_BAND; // uniform ±BAND
+}
+
 export interface ImbalanceDay {
   niv: number[];
   windForecast: number[];
