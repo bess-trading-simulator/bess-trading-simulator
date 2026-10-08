@@ -7489,3 +7489,4 @@ body {
 .pnl .da-section-title { padding: 0 16px; }
 @media (max-width: 1000px) { .pnl-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .bm-boa.skipped { color: var(--text-muted); border-style: dashed; }
+.mc-tz { font-size: 10px; color: var(--text-muted); letter-spacing: 0.05em; margin-left: -4px; }

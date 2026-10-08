@@ -12,7 +12,7 @@ import { dayPnl } from './pnl';
 import { buildBook, isProductOpen } from './intradayBook';
 
 const DAY = 86_400_000;
-const D0 = Date.UTC(2026, 4, 20); // Wed 20 May 2026 (BST → gate 08:20 UTC)
+const D0 = Date.UTC(2026, 4, 20); // Wed 20 May 2026 (clock = UK wall time, gate 09:20)
 const flat = (v: number) => new Array(48).fill(v);
 
 function day(d: number, opts: Partial<MarketDay> = {}): MarketDay {
@@ -55,7 +55,7 @@ describe('day-ahead auction (hourly, blind, pay-as-cleared)', () => {
       { hour: 3, side: OrderSide.BUY, volumeMw: 50, price: 40 },    // 50 > 40 → no fill
       { hour: 18, side: OrderSide.SELL, volumeMw: 50, price: 100 }, // 120 ≥ 100 → fills at 120
     ]);
-    s = step(s, 18); // past 08:20 UTC gate
+    s = step(s, 19); // past the 09:20 UK gate
     expect(s.dayAhead.isAuctionOpen).toBe(false);
     const pos = s.dayAhead.playerSchedule.filter(p => p.deliveryDay === D0 + DAY);
     expect(pos).toHaveLength(4); // 2 hours × 2 half-hours
@@ -66,7 +66,7 @@ describe('day-ahead auction (hourly, blind, pay-as-cleared)', () => {
   });
 
   it('rejects orders after gate closure', () => {
-    const s0 = at(fresh(), 9, 0);
+    const s0 = at(fresh(), 9, 30); // past the 09:20 UK gate
     expect(submitDayAheadBids(s0, [{ hour: 1, side: OrderSide.BUY, volumeMw: 10, price: 99 }])).toBe(s0);
   });
 
@@ -193,7 +193,7 @@ describe('intraday continuous order book', () => {
   it("tomorrow's products open only after the DA auction cleared", () => {
     let s = fresh();
     expect(isProductOpen(s, D0 + DAY, 20)).toBe(false);
-    s = step(s, 18);
+    s = step(s, 19);
     expect(isProductOpen(s, D0 + DAY, 20)).toBe(true);
   });
 });
@@ -216,7 +216,7 @@ describe('block orders (all-or-nothing, linked families)', () => {
   it('accepts a block when the AVERAGE clearing meets the limit, settles each SP at its price', () => {
     let s = fresh(day(D0), next);
     s = submitBlockOrderAction(s, { auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 50, price: 140 });
-    s = step(s, 18);
+    s = step(s, 19);
     expect(s.dayAhead.blockResults?.[0].accepted).toBe(true);
     const pos = s.dayAhead.playerSchedule.filter(p => p.deliveryDay === D0 + DAY);
     expect(pos).toHaveLength(4);
@@ -227,7 +227,7 @@ describe('block orders (all-or-nothing, linked families)', () => {
     let s = fresh(day(D0), next);
     // SP 30-37: avg = (4×40 + 4×150)/8 = 95 < 120
     s = submitBlockOrderAction(s, { auction: 'hourly', side: OrderSide.SELL, startSp: 30, endSp: 37, volumeMw: 50, price: 120 });
-    s = step(s, 18);
+    s = step(s, 19);
     expect(s.dayAhead.blockResults?.[0].accepted).toBe(false);
     expect(s.dayAhead.playerSchedule.filter(p => p.deliveryDay === D0 + DAY)).toHaveLength(0);
   });
@@ -239,7 +239,7 @@ describe('block orders (all-or-nothing, linked families)', () => {
     const parentId = s.dayAhead.blocks![0].id;
     // Child: discharge 17-19 min £100 (clears 150 → +£50 × 100 MWh = +£5000)
     s = submitBlockOrderAction(s, { auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 50, price: 100, parentId });
-    s = step(s, 18);
+    s = step(s, 19);
     const r = s.dayAhead.blockResults!;
     expect(r.every(x => x.accepted)).toBe(true);
 
@@ -248,7 +248,7 @@ describe('block orders (all-or-nothing, linked families)', () => {
     t = submitBlockOrderAction(t, { auction: 'hourly', side: OrderSide.BUY, startSp: 4, endSp: 7, volumeMw: 50, price: -200 });
     const pid = t.dayAhead.blocks![0].id;
     t = submitBlockOrderAction(t, { auction: 'hourly', side: OrderSide.SELL, startSp: 34, endSp: 37, volumeMw: 50, price: 100, parentId: pid });
-    t = step(t, 18);
+    t = step(t, 19);
     expect(t.dayAhead.blockResults!.every(x => !x.accepted)).toBe(true); // −£24000 parent can't be carried → child rejected too
     expect(t.dayAhead.playerSchedule.filter(p => p.deliveryDay === D0 + DAY)).toHaveLength(0);
   });
@@ -266,14 +266,14 @@ describe('EPEX GB 30-min auction (15:30 UK)', () => {
   it('opens after the hourly auction cleared and clears per half-hour at 15:30', () => {
     let s = fresh(day(D0), next);
     expect(submitHalfHourBidsAction(s, [{ sp: 3, side: OrderSide.SELL, volumeMw: 20, price: 55 }])).toBe(s); // not open yet
-    s = step(s, 18); // 09:00 UTC → after 08:20 UTC gate
+    s = step(s, 19); // 09:30 → after the 09:20 gate
     expect(s.dayAhead.hhAuctionOpen).toBe(true);
     expect(s.nextDay.daForecastHH).toHaveLength(48);
     s = submitHalfHourBidsAction(s, [
       { sp: 3, side: OrderSide.SELL, volumeMw: 20, price: 55 }, // clears 60 → filled
       { sp: 4, side: OrderSide.SELL, volumeMw: 20, price: 55 }, // clears 40 → not
     ]);
-    s = step(s, 14); // → 16:00 UTC, past 14:30 UTC (15:30 BST)
+    s = step(s, 14); // → past the 15:30 gate
     expect(s.dayAhead.hhAuctionOpen).toBe(false);
     const pos = s.dayAhead.playerSchedule.filter(p => p.deliveryDay === D0 + DAY);
     expect(pos).toHaveLength(1);
@@ -283,7 +283,7 @@ describe('EPEX GB 30-min auction (15:30 UK)', () => {
   it('caps 30-min orders so the net position stays within the power rating', () => {
     let s = fresh(day(D0), next);
     s = submitDayAheadBids(s, [{ hour: 1, side: OrderSide.BUY, volumeMw: 50, price: 999 }]); // charge 50 MW in SP 2-3
-    s = step(s, 18);
+    s = step(s, 19);
     s = submitHalfHourBidsAction(s, [
       { sp: 2, side: OrderSide.BUY, volumeMw: 20, price: 999 },  // already charging 50 → no room
       { sp: 3, side: OrderSide.SELL, volumeMw: 80, price: 0 },   // can sell back up to 100
@@ -317,14 +317,14 @@ describe('submitting blocks together with single orders', () => {
 
 describe('power limit across DA auctions and D+1 intraday', () => {
   it('intraday D+1 room counts pending 30-min orders', () => {
-    let s = step(fresh(), 18);
+    let s = step(fresh(), 19);
     s = submitHalfHourBidsAction(s, [{ sp: 10, side: OrderSide.BUY, volumeMw: 50, price: 1000 }]);
     s = placeIntradayOrderAction(s, { deliveryDay: D0 + DAY, period: 10, side: OrderSide.BUY, type: 'market', qtyMw: 30 });
     expect(s.intraday.orders.at(-1)!.status).toBe('rejected');
   });
 
   it('30-min orders count working intraday orders and submitted 30-min blocks', () => {
-    let s = step(fresh(), 18);
+    let s = step(fresh(), 19);
     s = setBlockOrdersAction(s, 'half', [{ id: 'Q', auction: 'half', side: OrderSide.SELL, startSp: 30, endSp: 33, volumeMw: 40, price: 0 }]);
     s = submitHalfHourBidsAction(s, [{ sp: 31, side: OrderSide.SELL, volumeMw: 20, price: 0 }]); // 40 + 20 > 50
     expect(s.dayAhead.hhBids).toHaveLength(0);

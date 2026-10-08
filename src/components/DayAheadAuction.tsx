@@ -81,7 +81,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   const capacity = battery.config.capacityMwh;
   const eff = battery.config.efficiencyPct / 100;
   const gateHours = hoursUntilGateClosure(currentTime);
-  const gateTimeUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' })
+  const gateTimeUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit' })
     .format(new Date(getGateClosureTime(currentTime)));
 
   const forecast = useMemo(() => hourlyPrices(nextDay.daForecast), [nextDay.daForecast]);
