@@ -1,19 +1,24 @@
 import { useState } from 'react';
 import type { GameState } from '../engine/types';
-import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay } from '../engine/clock';
-import { deviationRoom, findEntry } from '../engine/settlement';
-import { imbalanceSettlementPrice, nivForecastError, NIV_FORECAST_BAND } from '../engine/ukMarket';
+import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay, subStepIndex } from '../engine/clock';
+
+import { imbalanceSettlementPrice, nivForecastError, nivEstimate } from '../engine/ukMarket';
+import type { AssetType, BmStandingOrder } from '../engine/types';
+import IntraSpControl from './IntraSpControl';
+import BmPanel from './BmPanel';
 import HelpIcon from './HelpIcon';
 import {
   ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
-import { Activity, Wind, Gauge, AlertCircle, ArrowDown, ArrowUp, Clock, Eye, EyeOff } from 'lucide-react';
+import { Activity, Wind, Gauge, AlertCircle, Clock, Eye, EyeOff } from 'lucide-react';
 
 interface Props {
+  onSetDeviation?: (mw: number) => void;
+  onSubStep?: () => void;
+  onSetAssetType?: (t: AssetType) => void;
+  onSetBmOrder?: (o: BmStandingOrder) => void;
   state: GameState;
-  onCharge: (mw: number) => void;
-  onDischarge: (mw: number) => void;
 }
 
 const HISTORY_LOOKBACK = 12;
@@ -77,7 +82,8 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
   );
 }
 
-export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props) {
+export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onSetAssetType, onSetBmOrder }: Props) {
+  const assetType = state.assetType ?? 'non-bm';
   const { dayAhead, currentPrice, clock } = state;
   // 0-indexed current SP for array access (getSettlementPeriod returns 1-48).
   const currentSp = getSettlementPeriod(clock.currentTime) - 1;
@@ -110,8 +116,10 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
   const nivActual = dayAhead.niv[currentSp] ?? 0;
   // Current SP isn't settled yet → player sees a forecast (actual + error).
   const currentSpRevealed = currentSp < dayAhead.revealedPeriods;
-  const niv = currentSpRevealed ? nivActual : nivActual + nivForecastError(currentSp, dayIdx);
-  const nivBand = currentSpRevealed ? 0 : NIV_FORECAST_BAND;
+  // Live estimate: sharpens with every 5-minute interval of the running SP.
+  const liveEst = nivEstimate(nivActual, currentSp, dayIdx, subStepIndex(clock.currentTime));
+  const niv = currentSpRevealed ? nivActual : liveEst.niv;
+  const nivBand = currentSpRevealed ? 0 : liveEst.band;
   const daHere = dayAhead.forecastPrices[currentSp] ?? currentPrice?.price ?? 0;
   // EXPECTED price from the NIV forecast via the simplified model. On real days
   // the settle is Elexon's actual SIP, so the gap can be large — as in reality.
@@ -145,31 +153,6 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
 
   // Once the SP is revealed, show the actual settled SIP.
   const currentActualSettle = currentSpRevealed ? dayAhead.sipOutturn[currentSp] : null;
-
-  // You deviate from your contracted (DA + ID) position in the running SP. The
-  // room is limited by power (incl. what the contract already dispatches) and SoC.
-  const spEntry = findEntry(state.ledger, todayDay, currentSp);
-  const contractedMw = spEntry?.contractedMw ?? 0;
-  const deliveredMw = spEntry?.deliveredMw ?? 0;
-  const room = deviationRoom(state, todayDay, currentSp);
-  const maxCharge = room.charge;
-  const maxDischarge = room.discharge;
-
-  // One deliberate deviation per SP.
-  const alreadyTradedThisSp = Math.abs(spEntry?.deviationMw ?? 0) > 0.01;
-
-  // Signed slider: negative = charge, positive = discharge
-  const [target, setTarget] = useState(0);
-  const targetClamped = target >= 0
-    ? Math.min(target, maxDischarge)
-    : Math.max(target, -maxCharge);
-
-  const apply = () => {
-    if (alreadyTradedThisSp) return;
-    if (targetClamped > 0.1) onDischarge(targetClamped);
-    else if (targetClamped < -0.1) onCharge(-targetClamped);
-    setTarget(0);
-  };
 
   // SP time math for the countdown
   const spStartMs = (() => {
@@ -327,15 +310,6 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
   // Cyan = signal points long (→ charge), magenta = points short (→ discharge).
   const windErrColor = windError > 80 ? '#007be2' : windError < -80 ? '#ff874b' : '#9ca3af';
   const demandErrColor = demandError > 150 ? '#ff874b' : demandError < -150 ? '#007be2' : '#9ca3af';
-
-  // Risk/reward preview for the slider's current setting.
-  const previewDir: 'charge' | 'discharge' = targetClamped < 0 ? 'charge' : 'discharge';
-  const previewMwh = Math.abs(targetClamped) * 0.5;
-  const previewPnL = previewDir === 'charge'
-    ? -(liveSettlePrice * previewMwh)
-    : liveSettlePrice * previewMwh;
-  const slipPerMwh = avgSlippage ?? 12; // fallback before any settled trades
-  const previewBand = slipPerMwh * previewMwh;
 
   return (
     <div className="panel imbalance-panel" id="imbalance-tab">
@@ -557,7 +531,12 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
           <div className="da-quick-panel im-action-panel">
             <div className="im-action-head">
               <Clock size={14} />
-              <span>Current SP action</span>
+              <span className="im-asset-toggle">
+                <button className={`hdr-tab ${assetType === 'non-bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('non-bm')}
+                  title="Non-BM asset (e.g. embedded, via a supplier/aggregator): no binding FPN — you can deliberately run long/short (NIV chasing).">Non-BM</button>
+                <button className={`hdr-tab ${assetType === 'bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('bm')}
+                  title="Balancing Mechanism unit: your FPN is binding — no deliberate deviation; offer flexibility to NESO via bids/offers instead.">BM unit</button>
+              </span>
               <button
                 className={`im-blind-toggle ${hideSip ? 'on' : ''}`}
                 onClick={toggleHideSip}
@@ -605,86 +584,9 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
               </div>
             )}
 
-            <div className="im-slider-wrap">
-              <div className="im-slider-labels">
-                <span className="im-slider-lbl charge">← Charge</span>
-                <span className="im-slider-lbl discharge">Discharge →</span>
-              </div>
-              <input
-                type="range"
-                className="mw-slider im-slider"
-                min={-Math.round(maxCharge)}
-                max={Math.round(maxDischarge)}
-                step={1}
-                value={targetClamped}
-                onChange={(e) => setTarget(Number(e.target.value))}
-              />
-              <div className="im-slider-readout">
-                <span
-                  style={{
-                    color: targetClamped < 0 ? 'var(--accent)' : targetClamped > 0 ? 'var(--magenta)' : 'var(--text-muted)',
-                  }}
-                >
-                  {targetClamped === 0
-                    ? '0 MW (idle)'
-                    : targetClamped < 0
-                      ? `Charge ${(-targetClamped).toFixed(0)} MW`
-                      : `Discharge ${targetClamped.toFixed(0)} MW`}
-                </span>
-                <span className="im-slider-cap muted">
-                  room ↓{Math.round(maxCharge)} / ↑{Math.round(maxDischarge)} MW
-                </span>
-              </div>
-              <div className="im-slider-cap muted" style={{ marginTop: 4 }}>
-                Contract this SP: {contractedMw === 0 ? 'none' : `${contractedMw > 0 ? 'sell' : 'buy'} ${Math.abs(contractedMw).toFixed(0)} MW`}
-                {contractedMw !== 0 && Math.abs(deliveredMw - contractedMw) > 0.5 && ` · only ${Math.abs(deliveredMw).toFixed(0)} MW deliverable`}
-                {' '}· your move = deviation, settled at SIP
-              </div>
-            </div>
-
-            {Math.abs(targetClamped) > 0.1 && !hideSip && (
-              <div className="im-rr-preview">
-                <div className="im-rr-row">
-                  <span className="im-rr-label">Est. P&amp;L this SP</span>
-                  <span className={`im-rr-pnl ${previewPnL >= 0 ? 'positive' : 'negative'}`}>
-                    {previewPnL >= 0 ? '+' : '−'}£{Math.abs(previewPnL).toFixed(0)}
-                  </span>
-                </div>
-                <div className="im-rr-band">
-                  likely £{(previewPnL - previewBand).toFixed(0)} … £{(previewPnL + previewBand).toFixed(0)}
-                  <span className="im-rr-note">±£{previewBand.toFixed(0)} from typical slippage</span>
-                </div>
-              </div>
-            )}
-            {Math.abs(targetClamped) > 0.1 && hideSip && (
-              <div className="im-rr-preview im-rr-blind">
-                <span className="im-rr-label">Est. P&amp;L</span>
-                <span className="muted">hidden — revealed after settlement</span>
-              </div>
-            )}
-
-            <div className="im-action-buttons">
-              <button
-                className="btn btn-action im-deliver-btn"
-                onClick={apply}
-                disabled={Math.abs(targetClamped) < 0.1 || alreadyTradedThisSp}
-              >
-                {alreadyTradedThisSp
-                  ? `Deviation set: ${(spEntry?.deviationMw ?? 0) > 0 ? '+' : ''}${(spEntry?.deviationMw ?? 0).toFixed(0)} MW`
-                  : targetClamped < 0
-                    ? <><ArrowDown size={14} /> Deliver in current SP</>
-                    : targetClamped > 0
-                      ? <><ArrowUp size={14} /> Deliver in current SP</>
-                      : 'Pick a direction'}
-              </button>
-              <button
-                className="btn btn-secondary im-reset-btn"
-                onClick={() => setTarget(0)}
-                disabled={alreadyTradedThisSp}
-              >
-                Reset
-              </button>
-            </div>
+            {assetType === 'bm'
+              ? <BmPanel state={state} onSetBmOrder={onSetBmOrder ?? (() => {})} />
+              : <IntraSpControl state={state} onSetDeviation={onSetDeviation ?? (() => {})} onSubStep={onSubStep ?? (() => {})} hideSip={hideSip} />}
 
           </div>
         </div>

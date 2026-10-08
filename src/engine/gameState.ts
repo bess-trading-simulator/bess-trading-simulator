@@ -1,6 +1,6 @@
-import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent } from './types';
+import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
 import { OrderSide, GameMode } from './types';
-import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart } from './clock';
+import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart, SUB_STEP_MS, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery } from './battery';
@@ -11,7 +11,7 @@ import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
-import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
+import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions, setDeviationSetpoint, signedMw } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
 
@@ -222,7 +222,9 @@ export function tickGameState(state: GameState): GameState {
     };
   }
 
-  // 5) Physical delivery of the SP starting now (net contracts, one dispatch).
+  // 5) BM unit: NESO issues BOAs against your standing bids/offers for this SP,
+  //    then the SP is delivered (net contracts incl. BOAs, one dispatch).
+  s = acceptBmOrders(s, currentDayStart, currentSp, now);
   s = deliverPeriod(s, currentDayStart, currentSp);
 
   // 6) Intraday market moves; resting orders match or expire at T-60.
@@ -248,7 +250,7 @@ export function tickGameState(state: GameState): GameState {
     : syntheticPrice;
 
   const event = maybeGenerateEvent(now, newPrice, newPriceGen.tickCount);
-  const newEvents = [...breaking, ...(event ? [event] : []), ...gs.events].slice(0, 50);
+  const newEvents = [...breaking, ...(event ? [event] : []), ...s.events].slice(0, 50);
   let battery = s.battery;
   const dayAhead = s.dayAhead;
   let analysis = gs.analysis;
@@ -328,6 +330,106 @@ function runningSpSip(state: GameState): number {
   const sp = getSettlementPeriod(state.clock.currentTime) - 1;
   const dayIdx = Math.floor(getUtcDayStart(state.clock.currentTime) / DAY_MS);
   return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, (state.dayAhead.niv[sp] ?? 0) + nivForecastError(sp, dayIdx));
+}
+
+// ===== Intra-SP control (non-BM assets) =====
+
+/** Advance 5 minutes within the running SP; at the last interval move to the next SP. */
+export function subStepAction(state: GameState): GameState {
+  const now = state.clock.currentTime;
+  const next = now + SUB_STEP_MS;
+  if (Math.floor(next / HALF_HOUR_MS) !== Math.floor(now / HALF_HOUR_MS)) return stepForwardAction(state);
+  return { ...state, clock: { ...state.clock, currentTime: next } };
+}
+
+/**
+ * Set the deliberate deviation set point (MW, + = discharge more) for the rest
+ * of the running SP — like a real optimiser steering output within the period.
+ */
+export function setDeviationAction(state: GameState, setpointMw: number): GameState {
+  const day = getUtcDayStart(state.clock.currentTime);
+  const sp = getSettlementPeriod(state.clock.currentTime) - 1;
+  return setDeviationSetpoint(state, day, sp, setpointMw, runningSpSip(state));
+}
+
+// ===== Balancing Mechanism (BM units) =====
+
+export function setAssetTypeAction(state: GameState, assetType: AssetType): GameState {
+  return { ...state, assetType };
+}
+
+/** Set / replace your standing BM bid-offer pair for one SP (until gate closure T-60). */
+export function setBmOrderAction(state: GameState, order: BmStandingOrder): GameState {
+  const start = order.day + order.sp * HALF_HOUR_MS;
+  if (state.clock.currentTime >= start - ID_GATE_CLOSURE_MS) return state; // BM gate closure
+  const P = state.battery.config.powerRatingMw;
+  const clean: BmStandingOrder = {
+    ...order,
+    offerMw: Math.max(0, Math.min(P, Number.isFinite(order.offerMw) ? order.offerMw : 0)),
+    bidMw: Math.max(0, Math.min(P, Number.isFinite(order.bidMw) ? order.bidMw : 0)),
+    offerPrice: order.offerPrice != null && Number.isFinite(order.offerPrice) ? order.offerPrice : null,
+    bidPrice: order.bidPrice != null && Number.isFinite(order.bidPrice) ? order.bidPrice : null,
+  };
+  const book = (state.bmBook ?? []).filter(b => !(b.day === order.day && b.sp === order.sp));
+  const empty = (clean.offerMw === 0 || clean.offerPrice === null) && (clean.bidMw === 0 || clean.bidPrice === null);
+  return { ...state, bmBook: empty ? book : [...book, clean] };
+}
+
+/**
+ * NESO's decision at the start of an SP (simplified merit order): when the
+ * system is short it accepts offers priced at or below the marginal price
+ * (the SIP); when long it accepts bids priced at or above it. Accepted volume
+ * is limited by power and SoC. A BOA changes your contracted position (no
+ * imbalance) and is paid at YOUR price (pay-as-bid).
+ */
+function acceptBmOrders(state: GameState, day: number, sp: number, now: number): GameState {
+  if (state.assetType !== 'bm') return state;
+  const order = (state.bmBook ?? []).find(b => b.day === day && b.sp === sp);
+  if (!order) return state;
+  const niv = state.dayAhead.niv[sp] ?? 0;
+  const sip = state.dayAhead.sipOutturn[sp] ?? 0;
+  const { powerRatingMw: P, capacityMwh: cap, efficiencyPct } = state.battery.config;
+  const eff = efficiencyPct / 100;
+  const net = state.dayAhead.playerSchedule
+    .filter(p => !p.delivered && p.deliveryDay === day && p.period === sp)
+    .reduce((a, p) => a + signedMw(p), 0);
+  const soc = state.battery.currentSocMwh;
+  const socAfterContract = net > 0 ? soc - net * 0.5 : soc + -net * 0.5 * eff;
+  let kind: 'offer' | 'bid' | null = null;
+  let mw = 0;
+  let price = 0;
+  if (niv > 50 && order.offerMw > 0 && order.offerPrice !== null && order.offerPrice <= sip) {
+    kind = 'offer'; price = order.offerPrice;
+    mw = Math.min(order.offerMw, P - net, Math.max(0, socAfterContract) / 0.5);
+  } else if (niv < -50 && order.bidMw > 0 && order.bidPrice !== null && order.bidPrice >= sip) {
+    kind = 'bid'; price = order.bidPrice;
+    mw = Math.min(order.bidMw, P + net, Math.max(0, cap - socAfterContract) / (0.5 * eff));
+  }
+  mw = Math.floor(mw * 10) / 10;
+  if (!kind || mw < 1) return state;
+  const acc: BmAcceptance = { day, sp, kind, mw, price, time: now };
+  const event: MarketEvent = {
+    id: `live-boa-${day}-${sp}`,
+    timestamp: now,
+    headline: kind === 'offer'
+      ? `NESO BOA: your offer accepted — discharge +${mw} MW at £${price.toFixed(2)}`
+      : `NESO BOA: your bid accepted — charge ${mw} MW at £${price.toFixed(2)}`,
+    description: '',
+    priceImpact: 0,
+    category: 'policy',
+  };
+  return {
+    ...state,
+    bmAcceptances: [...(state.bmAcceptances ?? []), acc].slice(-200),
+    events: [event, ...state.events].slice(0, 50),
+    dayAhead: {
+      ...state.dayAhead,
+      playerSchedule: [...state.dayAhead.playerSchedule, {
+        period: sp, deliveryDay: day, market: 'bm',
+        action: kind === 'offer' ? 'discharge' : 'charge', mw, price, lockedAt: now,
+      }],
+    },
+  };
 }
 
 /**

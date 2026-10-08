@@ -118,6 +118,19 @@ export function nivForecastError(sp: number, dayIdx: number): number {
   return ((x - Math.floor(x)) - 0.5) * 2 * NIV_FORECAST_BAND; // uniform ±BAND
 }
 
+/**
+ * Real-time NIV estimate during the running SP. Live data (accepted BOAs,
+ * frequency, metered output) narrows the error as the SP progresses: at the
+ * start you have the forecast, in the last 5-minute interval almost the truth.
+ */
+export function nivEstimate(actualNiv: number, sp: number, dayIdx: number, subIdx: number): { niv: number; band: number } {
+  const remaining = Math.max(0, 1 - subIdx / 6);
+  return {
+    niv: Math.round(actualNiv + nivForecastError(sp, dayIdx) * remaining),
+    band: Math.round(NIV_FORECAST_BAND * remaining),
+  };
+}
+
 export interface ImbalanceDay {
   niv: number[];
   windForecast: number[];

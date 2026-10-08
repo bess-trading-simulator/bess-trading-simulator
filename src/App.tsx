@@ -36,6 +36,7 @@ export default function App() {
     state, dataSource, togglePause, setSpeed, stepForward,
     chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid, configureBattery,
     placeIntradayOrder, cancelIntradayOrder, setBlockOrders, submitHalfHourBids,
+    subStep, setDeviation, setAssetType, setBmOrder,
     intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
     advanceTutorial, skipTutorial, setMode, loadSavedState, reset,
   } = useGameState();
@@ -239,8 +240,10 @@ export default function App() {
           <div className="grid-main-full">
             <ImbalanceTrading
               state={state}
-              onCharge={chargeBattery}
-              onDischarge={dischargeBattery}
+              onSetDeviation={setDeviation}
+              onSubStep={subStep}
+              onSetAssetType={setAssetType}
+              onSetBmOrder={setBmOrder}
             />
             <SupportPanels state={state} lessonId={1} compact />
           </div>
