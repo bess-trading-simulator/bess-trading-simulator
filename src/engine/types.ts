@@ -197,6 +197,38 @@ export interface ForecastErrorBreakdown {
   noise: number[];
 }
 
+/**
+ * News that breaks DURING the delivery day (e.g. an interconnector trip).
+ * Shown when its SP starts. If it carries a shock window, the intraday market
+ * only prices the shock in after the news broke; NIV/SIP already contain it.
+ */
+export interface LiveNews {
+  sp: number; // 0-indexed SP when the news breaks
+  headline: string;
+  category: 'outage' | 'demand' | 'weather' | 'renewable' | 'policy';
+  shock?: { fromSp: number; toSp: number };
+}
+
+/** Desk-signal overrides for a scenario's auction day (the "story" visible at D-1). */
+export interface DeskHints {
+  gasPct?: number;
+  tempAnomalyC?: number;
+  windRevisionMw?: number;
+  /** Events with their effect as a share of the day's average price */
+  events?: (Omit<DeskEvent, 'effect'> & { effectPct: number })[];
+}
+
+/** Scenario metadata kept in the game state for briefing / debrief. */
+export interface ScenarioInfo {
+  id: string;
+  title: string;
+  description: string;
+  teachingPoints: string[];
+  /** UTC midnight of the scenario (= auction) day */
+  day: number;
+  realData?: boolean;
+}
+
 /** All market data for one delivery day (48 SPs, UK settlement day). */
 export interface MarketDay {
   /** UTC midnight ms of the delivery day */
@@ -212,6 +244,8 @@ export interface MarketDay {
   signals?: DeskSignals;
   /** Why the forecast differs from the actual price (revealed after clearing) */
   forecastErrors?: ForecastErrorBreakdown;
+  /** News breaking during this delivery day */
+  liveNews?: LiveNews[];
   /** Actual DA price per SP (real: Market Index Price). Hidden until the auction clears. */
   daClearing: number[];
   sipOutturn: number[];
@@ -328,6 +362,8 @@ export interface DayAheadState {
   hhResults?: HalfHourResult[];
   hhGateClosureTime?: number;
   hhAuctionOpen?: boolean;
+  /** News breaking during TODAY's delivery (shown when each SP starts) */
+  todayNews?: LiveNews[];
   /** Yesterday's blocks / 30-min auction for TODAY */
   todayBlocks?: DaBlockOrder[];
   todayBlockResults?: BlockResult[];
@@ -391,6 +427,8 @@ export interface GameState {
   intraday: IntradayState;
   /** Settlement ledger, one entry per (deliveryDay, period) that saw activity. */
   ledger: SettlementEntry[];
+  /** Active scenario (illustrative or a chosen real day), if any */
+  scenario?: ScenarioInfo | null;
 }
 
 export const GLOSSARY: Record<string, string> = {

@@ -124,7 +124,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
           <span className="launcher-step-num">2</span>
           <div className="launcher-step-title">
             <h2>Choose a day</h2>
-            <p>Start on the most recent complete day of real Elexon data, or load an illustrative (fictional) scenario. You can switch days any time from the menu.</p>
+            <p>Start on the most recent complete day of real Elexon data, or load an illustrative (fictional) scenario — you start the day before, bid for the scenario day in the day-ahead auctions, then live through it. You can switch days any time from the menu.</p>
           </div>
         </div>
         <div className="launcher-grid scenario-grid">
@@ -157,7 +157,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
                   <Calendar size={20} />
                   <div>
                     <h3>{day.title}</h3>
-                    <span className="launcher-card-sub">Illustrative scenario · fictional data</span>
+                    <span className="launcher-card-sub">Illustrative · bid D-1, then trade the day</span>
                   </div>
                   <span
                     className="scenario-difficulty"

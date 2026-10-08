@@ -57,4 +57,20 @@ describe('desk forecast = actual − causal errors', () => {
     expect(next.signals).toBeDefined();
     expect(next.daForecast.some((f, sp) => Math.abs(f - next.daClearing[sp]) > 0.5)).toBe(true);
   });
+
+  it('some simulated days have an unplanned trip: news + short system, DA price unaffected', () => {
+    let trips = 0;
+    for (let seed = 0; seed < 100; seed++) {
+      const d = nextDayFrom(base, seed);
+      const news = d.liveNews ?? [];
+      const trip = news.find(n => n.shock);
+      if (!trip) continue;
+      trips++;
+      const { fromSp, toSp } = trip.shock!;
+      const avgNiv = d.niv.slice(fromSp, toSp + 1).reduce((a, b) => a + b, 0) / (toSp - fromSp + 1);
+      expect(avgNiv).toBeGreaterThan(100); // system short during the trip
+    }
+    expect(trips).toBeGreaterThan(5);
+    expect(trips).toBeLessThan(40);
+  });
 });

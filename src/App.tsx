@@ -28,6 +28,8 @@ import type { SandboxView, SandboxMarket } from './components/SandboxLauncher';
 import type { HistoricalDay } from './data/historicalDays';
 import AboutProject from './components/AboutProject';
 import HeaderMenu from './components/HeaderMenu';
+import ScenarioBanner from './components/ScenarioBanner';
+import LiveNews from './components/LiveNews';
 
 export default function App() {
   const {
@@ -231,6 +233,8 @@ export default function App() {
       </header>
 
       <main className="dashboard-bess">
+        <ScenarioBanner state={state} />
+        {(view === 'imbalance' || view === 'intraday') && <LiveNews events={state.events} now={state.clock.currentTime} />}
         {view === 'imbalance' && (
           <div className="grid-main-full">
             <ImbalanceTrading

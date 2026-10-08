@@ -242,8 +242,19 @@ export function useGameState() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     // Real Elexon days keep fetching real auction days; illustrative ones stay synthetic.
     setRealMode(Boolean(day.realData));
-    setState(prev => loadScenario(prev, day));
-    setLoading(false);
+    if (!day.realData) {
+      setState(prev => loadScenario(prev, day));
+      setLoading(false);
+      return;
+    }
+    // A real Elexon day becomes the auction day; the lead-in day is the real day before it.
+    setLoading(true);
+    const dayMs = Date.parse(day.date + 'T00:00:00Z');
+    fetchDayData(utcDateString(dayMs - DAY_MS))
+      .then(prev => (prev.isComplete ? realMarketDay(dayMs - DAY_MS, prev) : undefined))
+      .catch(() => undefined)
+      .then(lead => setState(prev => loadScenario(prev, day, lead)))
+      .finally(() => setLoading(false));
   }, []);
 
   // Explicitly (re)load the latest real Elexon days — used when the player picks

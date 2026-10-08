@@ -197,13 +197,13 @@ describe('intraday continuous order book', () => {
 });
 
 describe('scenario SIP source', () => {
-  it('uses real SIP for real Elexon days and the model for illustrative ones', () => {
+  it('scenario days settle at their own (curated or real) SIP', () => {
     const args = { date: '2026-05-20', daPrices: flat(50), sipPrices: flat(123), niv: flat(300) };
     const real = loadScenario(createGameState(), { ...args, realData: true });
     const fake = loadScenario(createGameState(), args);
-    expect(real.dayAhead.sipOutturn[5]).toBe(123);
-    expect(fake.dayAhead.sipOutturn[5]).toBeGreaterThan(50); // NIV +300 = short ⇒ above DA
-    expect(fake.dayAhead.sipOutturn[5]).not.toBe(123);
+    // The scenario day is the auction's delivery day
+    expect(real.nextDay.sipOutturn[5]).toBe(123);
+    expect(fake.nextDay.sipOutturn[5]).toBe(123);
   });
 });
 
@@ -333,5 +333,44 @@ describe('power limit across DA auctions and D+1 intraday', () => {
     s = setBlockOrdersAction(s, 'hourly', [{ id: 'A', auction: 'hourly', side: OrderSide.BUY, startSp: 4, endSp: 7, volumeMw: 50, price: 1000 }]);
     s = submitDayAheadBids(s, [{ hour: 2, side: OrderSide.BUY, volumeMw: 50, price: 1000 }]);
     expect(s.dayAhead.bids).toHaveLength(0);
+  });
+});
+
+describe('scenarios: auction day, live news, unforeseen shocks', () => {
+  const S = '2026-05-21';
+  const SDAY = Date.parse(S + 'T00:00:00Z');
+  const scen = {
+    id: 'trip', title: 'Trip', date: S,
+    daPrices: flat(100), sipPrices: flat(100).map((v, i) => (i >= 30 && i <= 37 ? 600 : v)), niv: flat(0).map((v, i) => (i >= 30 && i <= 37 ? 700 : v)),
+    keyEvents: [{ sp: 31, text: 'Interconnector TRIPPED' }, { sp: 37, text: 'Recovering' }],
+    shock: { fromSp: 31, toSp: 38 },
+    deskHints: { tempAnomalyC: -4, gasPct: 5 },
+  };
+
+  it('starts on the lead-in day and the scenario day is tomorrow (the auction day)', () => {
+    const s = loadScenario(createGameState(), scen);
+    expect(s.clock.currentTime).toBe(SDAY - DAY);
+    expect(s.nextDay.day).toBe(SDAY);
+    expect(s.dayAhead.deliveryDay).toBe(SDAY);
+    expect(s.scenario?.title).toBe('Trip');
+    expect(s.nextDay.signals?.tempAnomalyC).toBeLessThan(-3); // story visible at D-1
+  });
+
+  it('breaks key events as news at their SP on the scenario day', () => {
+    let s = loadScenario(createGameState(), scen);
+    s = step(s, 48 + 30); // scenario day, SP index 30 (= SP31)
+    expect(s.events.some(e => e.headline === 'Interconnector TRIPPED')).toBe(true);
+    expect(s.events.some(e => e.headline === 'Recovering')).toBe(false);
+  });
+
+  it('intraday does not price the shock before the news, then reprices', () => {
+    let s = loadScenario(createGameState(), scen);
+    s = step(s, 48 + 20); // 10:00 on scenario day, product SP index 34 (17:00) open
+    const before = buildBook(s, SDAY, 34)!.mid;
+    expect(before).toBeLessThan(150); // anchored to DA (100), no knowledge of the trip
+    s = step(s, 10); // 15:00 → news broke at SP index 30
+    const after = buildBook(s, SDAY, 34);
+    // Curated SIP 600 → anchor DA + 0.8 × (SIP − DA) ≈ £500
+    if (after) expect(after.mid).toBeGreaterThan(300); // still open until 16:00 gate
   });
 });

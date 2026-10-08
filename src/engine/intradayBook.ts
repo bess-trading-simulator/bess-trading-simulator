@@ -13,7 +13,7 @@
 //   (pay-as-bid: a resting order fills at its own limit).
 // - Trading stops at gate closure T-60 (BM Gate Closure): working orders expire.
 
-import type { GameState, IdOrder, IdOrderType, IdFill, IntradayState } from './types';
+import type { GameState, IdOrder, IdOrderType, IdFill, IntradayState, LiveNews } from './types';
 import { OrderSide } from './types';
 import type { TradePosition } from './ukMarket';
 import { mulberry32 } from './ukMarket';
@@ -52,14 +52,24 @@ function round2(v: number): number { return Math.round(v * 100) / 100; }
 function round1(v: number): number { return Math.round(v * 10) / 10; }
 
 /** Reference data for a product: its DA price and the (hidden) imbalance outcome. */
-export function productRef(state: GameState, day: number, sp: number): { da: number; sip: number } | null {
+type ShockState = 'none' | 'hidden' | 'known';
+
+/** Is this product inside an unforeseen shock window, and has the news broken yet? */
+function shockState(news: LiveNews[] | undefined, day: number, sp: number, now: number): ShockState {
+  const n = (news ?? []).find(x => x.shock && sp >= x.shock.fromSp && sp <= x.shock.toSp);
+  if (!n) return 'none';
+  return now >= day + n.sp * HALF_HOUR_MS ? 'known' : 'hidden';
+}
+
+export function productRef(state: GameState, day: number, sp: number): { da: number; sip: number; shock: ShockState } | null {
   const today = getUtcDayStart(state.clock.currentTime);
+  const now = state.clock.currentTime;
   if (day === today) {
-    return { da: state.dayAhead.forecastPrices[sp] ?? 0, sip: state.dayAhead.sipOutturn[sp] ?? 0 };
+    return { da: state.dayAhead.forecastPrices[sp] ?? 0, sip: state.dayAhead.sipOutturn[sp] ?? 0, shock: shockState(state.dayAhead.todayNews, day, sp, now) };
   }
   if (day === state.nextDay.day) {
     if (state.dayAhead.isAuctionOpen) return null; // D+1 products open once the DA auction cleared
-    return { da: state.nextDay.daClearing[sp] ?? 0, sip: state.nextDay.sipOutturn[sp] ?? 0 };
+    return { da: state.nextDay.daClearing[sp] ?? 0, sip: state.nextDay.sipOutturn[sp] ?? 0, shock: shockState(state.nextDay.liveNews, day, sp, now) };
   }
   return null;
 }
@@ -86,8 +96,12 @@ function hoursToDelivery(now: number, day: number, sp: number): number {
   return Math.max(0, (productStart(day, sp) - now) / HOUR_MS);
 }
 
-function anchorPrice(da: number, sip: number, h: number): number {
-  // Information about the imbalance outcome arrives as delivery approaches.
+function anchorPrice(da: number, sip: number, h: number, shock: ShockState = 'none'): number {
+  // An unforeseen shock (e.g. a trip) is invisible to the market until the news
+  // breaks — then intraday reprices hard toward the new system state.
+  if (shock === 'hidden') return da;
+  if (shock === 'known') return da + 0.8 * (sip - da);
+  // Otherwise information about the imbalance outcome arrives as delivery approaches.
   const w = 1 / (1 + h / 2);
   return da + 0.5 * w * (sip - da);
 }
@@ -104,7 +118,7 @@ export function buildBook(state: GameState, day: number, sp: number, now = state
   if (!ref) return null;
   const key = productKey(day, sp);
   const h = hoursToDelivery(now, day, sp);
-  const mid = state.intraday.mids[key] ?? anchorPrice(ref.da, ref.sip, h);
+  const mid = state.intraday.mids[key] ?? anchorPrice(ref.da, ref.sip, h, ref.shock);
   const liq = liquidity(sp, h);
   const halfSpread = round2((0.4 + 0.012 * Math.abs(mid)) * (1 + 2 / (1 + h)) / Math.max(0.5, liq));
   const step = 0.5 + 0.004 * Math.abs(mid);
@@ -326,7 +340,7 @@ export function tickIntraday(state: GameState): GameState {
     const sigma = (1 + 0.02 * Math.abs(ref.da)) * (0.8 + 1.2 / (1 + h));
     const dev = 0.85 * (devs[key] ?? 0) + (rng() - 0.5) * 2 * sigma;
     devs[key] = dev;
-    mids[key] = round2(anchorPrice(ref.da, ref.sip, h) + dev);
+    mids[key] = round2(anchorPrice(ref.da, ref.sip, h, ref.shock) + dev);
     midHistory[key] = [...(midHistory[key] ?? []), mids[key]].slice(-HISTORY_LEN);
   }
 
@@ -383,7 +397,7 @@ export function ensureMids(state: GameState): GameState {
     if (mids[key] !== undefined) continue;
     const ref = productRef(state, day, sp)!;
     if (!changed) { mids = { ...mids }; changed = true; }
-    mids[key] = round2(anchorPrice(ref.da, ref.sip, hoursToDelivery(now, day, sp)));
+    mids[key] = round2(anchorPrice(ref.da, ref.sip, hoursToDelivery(now, day, sp), ref.shock));
   }
   return changed ? { ...state, intraday: { ...state.intraday, mids } } : state;
 }

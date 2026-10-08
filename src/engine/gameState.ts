@@ -1,4 +1,4 @@
-import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid } from './types';
+import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent } from './types';
 import { OrderSide, GameMode } from './types';
 import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart } from './clock';
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
@@ -9,7 +9,7 @@ import type { TradePosition } from './ukMarket';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
-import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast } from './marketDay';
+import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
@@ -40,6 +40,7 @@ function dayAheadForDay(
     deliveryDay: next.day,
     nextDeliveryDay: next.day,
     todaySource: today.source,
+    todayNews: today.liveNews ?? [],
     forecastPrices: today.daClearing,
     sipOutturn: today.sipOutturn,
     niv: today.niv,
@@ -126,6 +127,7 @@ export function loadMarketDays(state: GameState, today: MarketDay, nextIn: Marke
     nextDay: next,
     intraday: createIntradayState(),
     ledger: [],
+    scenario: null,
   });
 }
 
@@ -225,6 +227,18 @@ export function tickGameState(state: GameState): GameState {
   // 6) Intraday market moves; resting orders match or expire at T-60.
   s = ensureMids(tickIntraday(s));
 
+  // 7) News breaking in the SP that starts now (e.g. an interconnector trip).
+  const breaking: MarketEvent[] = (s.dayAhead.todayNews ?? [])
+    .filter((n: LiveNews) => n.sp === currentSp)
+    .map((n: LiveNews, i: number) => ({
+      id: `live-${currentDayStart}-${n.sp}-${i}`,
+      timestamp: now,
+      headline: n.headline,
+      description: '',
+      priceImpact: 0,
+      category: n.category,
+    }));
+
   // Current price shown in the cockpit: today's DA price for the running SP
   // (the SIP is only known after the SP ends).
   const daNow = s.dayAhead.forecastPrices[currentSp];
@@ -233,7 +247,7 @@ export function tickGameState(state: GameState): GameState {
     : syntheticPrice;
 
   const event = maybeGenerateEvent(now, newPrice, newPriceGen.tickCount);
-  const newEvents = event ? [event, ...gs.events].slice(0, 50) : gs.events;
+  const newEvents = [...breaking, ...(event ? [event] : []), ...gs.events].slice(0, 50);
   let battery = s.battery;
   const dayAhead = s.dayAhead;
   let analysis = gs.analysis;
@@ -560,15 +574,52 @@ export function submitBmOfferAction(
   };
 }
 
-// Load a scenario: the scenario day is TODAY; tomorrow (the open auction's day)
-// is a synthetic day shaped like it. Real Elexon days get the real next day
-// patched in by the data hook when available.
-export function loadScenario(state: GameState, scenario: { daPrices: number[]; sipPrices: number[]; niv: number[]; date: string; realData?: boolean }): GameState {
+export interface ScenarioInput {
+  id?: string;
+  title?: string;
+  description?: string;
+  teachingPoints?: string[];
+  daPrices: number[];
+  sipPrices: number[];
+  niv: number[];
+  date: string;
+  realData?: boolean;
+  /** Key events as news at their SP (1-based SP numbers, as in the scenario data) */
+  keyEvents?: { sp: number; text: string }[];
+  /** Unforeseen shock window (1-based SPs): intraday only prices it in once the first news breaks */
+  shock?: { fromSp: number; toSp: number };
+  deskHints?: DeskHints;
+}
+
+/**
+ * Load a scenario: the session starts on a normal lead-in day and the scenario
+ * day is the DAY-AHEAD AUCTION's delivery day — you bid for it on D-1 (with
+ * desk signals that hint at the story), then live through it: intraday,
+ * imbalance, live news (e.g. a trip) and settlement.
+ */
+export function loadScenario(state: GameState, scenario: ScenarioInput, leadIn?: MarketDay): GameState {
   const day = Date.parse(scenario.date + 'T00:00:00Z');
-  const today = scenarioMarketDay(day, scenario);
   const seed = scenario.daPrices.reduce((a, p) => a + Math.abs(Math.round(p)), 0);
-  const next = nextDayFrom(today, seed + 1);
-  return loadMarketDays(state, today, next);
+  const shock = scenario.shock ? { fromSp: scenario.shock.fromSp - 1, toSp: scenario.shock.toSp - 1 } : undefined;
+  const liveNews: LiveNews[] = (scenario.keyEvents ?? []).map((e, i) => ({
+    sp: Math.max(0, Math.min(47, e.sp - 1)),
+    headline: e.text,
+    category: 'demand',
+    ...(i === 0 && shock ? { shock, category: 'outage' as const } : {}),
+  }));
+  const scenarioDay = withDeskForecast({ ...scenarioMarketDay(day, scenario), liveNews }, seed, scenario.deskHints);
+  const lead = leadIn ?? leadInDay(scenario.daPrices, day - DAY_MS, seed + 7);
+  return {
+    ...loadMarketDays(state, lead, scenarioDay),
+    scenario: {
+      id: scenario.id ?? `scenario-${scenario.date}`,
+      title: scenario.title ?? scenario.date,
+      description: scenario.description ?? '',
+      teachingPoints: scenario.teachingPoints ?? [],
+      day,
+      realData: scenario.realData,
+    },
+  };
 }
 
 export function reconfigureBattery(state: GameState, config: Partial<BatteryConfig>): GameState {
