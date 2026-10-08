@@ -83,17 +83,24 @@ export default function BmPanel({ state, onSetBmOrder }: Props) {
         {accepted.length === 0
           ? <span className="muted"> none yet</span>
           : accepted.slice(0, 8).map((a, i) => {
-            // A BOA is executed in its SP (dispatched at the SP start) and paid at your price.
+            if (a.status === 'skipped') {
+              return (
+                <span key={i} className="bm-boa skipped" title="Your price was in merit, but the control room dispatched other units instead ('skip'). A known issue for batteries in the GB BM.">
+                  {spLabel(a.sp)} skipped · in merit at £{a.price.toFixed(0)}
+                </span>
+              );
+            }
+            // A BOA runs from its start interval to the SP end and is paid at your price.
             const cash = (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price;
             const status = a.sp < curSp ? 'delivered' : a.sp === curSp ? 'running' : 'scheduled';
             return (
-              <span key={i} className={`bm-boa ${a.kind}`} title={`${a.kind === 'offer' ? 'Discharged' : 'Charged'} ${a.mw} MW for 30 min = ${(a.mw * 0.5).toFixed(1)} MWh at your price £${a.price.toFixed(2)} (pay-as-bid). Counts as a contract — no imbalance.`}>
-                {spLabel(a.sp)} {a.kind === 'offer' ? `+${a.mw} MW` : `−${a.mw} MW`} @ £{a.price.toFixed(0)} · {status} · {cash >= 0 ? '+' : '−'}£{Math.abs(cash).toFixed(0)}
+              <span key={i} className={`bm-boa ${a.kind}`} title={`BOA: ${a.instructedMw ?? a.mw} MW from :${String((a.startSubIdx ?? 0) * 5).padStart(2, '0')} to the end of the SP = ${(a.mw * 0.5).toFixed(1)} MWh (SP average ${a.mw} MW) at your price £${a.price.toFixed(2)} (pay-as-bid). Counts as a contract — no imbalance.`}>
+                {spLabel(a.sp)} {a.kind === 'offer' ? '+' : '−'}{a.instructedMw ?? a.mw} MW{a.startSubIdx ? ` from :${String(a.startSubIdx * 5).padStart(2, '0')}` : ''} @ £{a.price.toFixed(0)} · {status} · {cash >= 0 ? '+' : '−'}£{Math.abs(cash).toFixed(0)}
               </span>
             );
           })}
         {accepted.length > 0 && (() => {
-          const total = accepted.reduce((s, a) => s + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
+          const total = accepted.filter(a => a.status !== 'skipped').reduce((s, a) => s + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
           return <span className="bm-boa-total">BM cash today: <strong className={total >= 0 ? 'positive' : 'negative'}>{total >= 0 ? '+' : '−'}£{Math.abs(total).toFixed(0)}</strong></span>;
         })()}
       </div>

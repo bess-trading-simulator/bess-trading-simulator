@@ -74,7 +74,7 @@ export const SPEED_MS: Record<SpeedPreset, number> = {
   ultra: 100,
 };
 
-export type AppView = 'imbalance' | 'intraday' | 'dayahead' | 'forecast' | 'analysis';
+export type AppView = 'imbalance' | 'intraday' | 'dayahead' | 'forecast' | 'pnl' | 'analysis';
 
 export interface HourlyPrice {
   timestamp: number;
@@ -325,6 +325,23 @@ export interface SettlementEntry {
   settled: boolean;
   /** Deliberate deviation set point per 5-min interval (6 values, MW); its mean is deviationMw */
   deviationProfile?: number[];
+  /** Exchange fees on DA/ID volume delivered in this SP (negative £) */
+  feesCash?: number;
+  /** Battery wear cost on metered throughput (negative £) */
+  degradationCash?: number;
+}
+
+/** P&L of one delivery day, by source (£, + = gain). */
+export interface DayPnl {
+  day: number;
+  da: number;
+  id: number;
+  bm: number;
+  imbalance: number;
+  fees: number;
+  degradation: number;
+  net: number;
+  throughputMwh: number;
 }
 
 /** Asset registration: a Balancing Mechanism unit must follow its FPN; a non-BM asset can spill. */
@@ -349,9 +366,15 @@ export interface BmAcceptance {
   day: number;
   sp: number;
   kind: 'offer' | 'bid';
+  /** SP-average MW delivered (instructed MW × share of the SP it ran) — 0 if skipped */
   mw: number;
   price: number;
   time: number;
+  /** 'skipped' = in merit but passed over by the control room */
+  status?: 'accepted' | 'skipped';
+  /** MW instructed in the BOA and the 5-minute interval it started in */
+  instructedMw?: number;
+  startSubIdx?: number;
 }
 
 export interface MarketEvent {
@@ -463,6 +486,8 @@ export interface GameState {
   /** BM unit: standing bids/offers per SP and the BOAs NESO issued */
   bmBook?: BmStandingOrder[];
   bmAcceptances?: BmAcceptance[];
+  /** Archived P&L of completed delivery days in this session */
+  pnlHistory?: DayPnl[];
 }
 
 export const GLOSSARY: Record<string, string> = {

@@ -17,6 +17,8 @@ import { dispatchBattery, redispatchBattery, bookCash } from './battery';
 import type { TradePosition } from './ukMarket';
 
 const SP_HOURS = 0.5;
+/** Exchange fee on day-ahead and intraday volume, £/MWh (illustrative, order of magnitude of EPEX/N2EX fees) */
+export const EXCHANGE_FEE_PER_MWH = 0.05;
 
 function round2(v: number): number { return Math.round(v * 100) / 100; }
 
@@ -65,7 +67,9 @@ export function deliverPeriod(state: GameState, day: number, sp: number): GameSt
   const avgPrice = due.reduce((a, p) => a + p.mw * p.price, 0) / Math.max(1e-9, due.reduce((a, p) => a + p.mw, 0));
 
   const { newState, actualMw } = dispatchBattery(state.battery, netMw, now, avgPrice);
-  const battery = bookCash(newState, cash);
+  // Exchange fees on every DA / ID MWh traded for this SP (BM acceptances carry no exchange fee).
+  const fees = -due.filter((p) => p.market === 'da' || p.market === 'id').reduce((a, p) => a + p.mw * SP_HOURS, 0) * EXCHANGE_FEE_PER_MWH;
+  const battery = bookCash(bookCash(newState, cash), fees);
 
   const prev = findEntry(state.ledger, day, sp) ?? emptyEntry(day, sp);
   const entry: SettlementEntry = {
@@ -74,6 +78,7 @@ export function deliverPeriod(state: GameState, day: number, sp: number): GameSt
     deliveredMw: round2(prev.deliveredMw + actualMw),
     meteredMw: round2(prev.meteredMw + actualMw),
     contractCash: round2(prev.contractCash + cash),
+    feesCash: round2((prev.feesCash ?? 0) + fees),
   };
 
   const trades: Trade[] = due.map((p) => ({
@@ -213,7 +218,9 @@ export function settlePeriod(state: GameState, day: number, sp: number, sip: num
   const imbalanceMwh = Math.abs(rawMwh) < 0.01 ? 0 : rawMwh;
   const imbalanceMw = imbalanceMwh / SP_HOURS;
   const imbalanceCash = round2(imbalanceMwh * sip);
-  const entry: SettlementEntry = { ...e, imbalanceMwh, imbalancePrice: sip, imbalanceCash, settled: true };
+  // Wear cost on the metered (net) throughput of the SP.
+  const degradationCash = -round2(Math.abs(e.meteredMw) * SP_HOURS * (state.battery.config.degradationCostPerMwh ?? 5));
+  const entry: SettlementEntry = { ...e, imbalanceMwh, imbalancePrice: sip, imbalanceCash, degradationCash, settled: true };
   const trades = imbalanceMwh !== 0
     ? [...state.trades, {
         orderId: `imb-${day}-${sp}`,
@@ -225,7 +232,7 @@ export function settlePeriod(state: GameState, day: number, sp: number, sip: num
         marketType: MarketType.SPOT,
       } satisfies Trade]
     : state.trades;
-  return { ...state, battery: bookCash(state.battery, imbalanceCash), trades, ledger: upsert(state.ledger, entry) };
+  return { ...state, battery: bookCash(bookCash(state.battery, imbalanceCash), degradationCash), trades, ledger: upsert(state.ledger, entry) };
 }
 
 /**

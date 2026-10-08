@@ -7477,3 +7477,15 @@ body {
 .bm-boa.offer { color: var(--discharge); }
 .bm-boa.bid { color: var(--charge); }
 .bm-boa-total { font-size: 12px; margin-left: auto; }
+
+/* P&L dashboard */
+.pnl { padding-bottom: 16px; }
+.pnl-hero { display: flex; gap: 40px; padding: 4px 16px 12px; align-items: baseline; }
+.pnl-hero > div { display: flex; flex-direction: column; gap: 2px; }
+.pnl-hero strong { font-size: 26px; font-family: var(--font-mono); }
+.pnl-cards { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding: 0 16px 12px; }
+.pnl-legend { padding: 4px 8px; }
+.pnl .data-table { margin: 0 16px; width: calc(100% - 32px); }
+.pnl .da-section-title { padding: 0 16px; }
+@media (max-width: 1000px) { .pnl-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.bm-boa.skipped { color: var(--text-muted); border-style: dashed; }

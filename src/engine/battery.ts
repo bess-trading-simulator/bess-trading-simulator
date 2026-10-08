@@ -4,6 +4,8 @@ export interface BatteryConfig {
   efficiencyPct: number;
   minSocPct: number;
   maxSocPct: number;
+  /** £ per MWh of throughput (wear cost, illustrative) */
+  degradationCostPerMwh?: number;
 }
 
 export interface BatteryState {
@@ -33,6 +35,7 @@ const DEFAULT_CONFIG: BatteryConfig = {
   efficiencyPct: 90,
   minSocPct: 0,
   maxSocPct: 100,
+  degradationCostPerMwh: 5,
 };
 
 export function createBattery(config?: Partial<BatteryConfig>): BatteryState {

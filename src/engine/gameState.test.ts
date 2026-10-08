@@ -8,6 +8,7 @@ import {
 import { OrderSide } from './types';
 import type { GameState, MarketDay } from './types';
 import { findEntry } from './settlement';
+import { dayPnl } from './pnl';
 import { buildBook, isProductOpen } from './intradayBook';
 
 const DAY = 86_400_000;
@@ -439,46 +440,7 @@ describe('intra-SP control (5-minute set points)', () => {
   });
 });
 
-describe('BM unit: standing bids/offers and BOAs', () => {
-  const shortDay = day(D0, { niv: flat(400), sipOutturn: flat(200) });
-  const longDay = day(D0, { niv: flat(-400), sipOutturn: flat(-10) });
-
-  it('NESO accepts an offer at or below the marginal price when short (pay-as-bid, no imbalance)', () => {
-    let s = setAssetTypeAction(fresh(shortDay), 'bm');
-    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 150, bidMw: 0, bidPrice: null });
-    s = step(s, 11); // SP 10 starts → BOA + delivery, then settles
-    expect(s.bmAcceptances).toHaveLength(1);
-    const e = findEntry(s.ledger, D0, 10)!;
-    expect(e.contractedMw).toBe(30);
-    expect(e.meteredMw).toBe(30);
-    expect(e.imbalanceMwh).toBe(0);
-    expect(e.contractCash).toBeCloseTo(30 * 0.5 * 150, 5);
-    expect(s.events.some(ev => ev.id.startsWith('live-boa'))).toBe(true);
-  });
-
-  it('rejects offers priced above the marginal price and ignores non-BM assets', () => {
-    let s = setAssetTypeAction(fresh(shortDay), 'bm');
-    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 250, bidMw: 0, bidPrice: null });
-    expect(step(s, 11).bmAcceptances ?? []).toHaveLength(0);
-    let t = fresh(shortDay); // non-BM
-    t = setBmOrderAction(t, { day: D0, sp: 10, offerMw: 30, offerPrice: 100, bidMw: 0, bidPrice: null });
-    expect(step(t, 11).bmAcceptances ?? []).toHaveLength(0);
-  });
-
-  it('accepts bids when long (charge, you pay your bid — negative bid = paid)', () => {
-    let s = setAssetTypeAction(fresh(longDay), 'bm');
-    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 0, offerPrice: null, bidMw: 40, bidPrice: 5 });
-    s = step(s, 11);
-    const e = findEntry(s.ledger, D0, 10)!;
-    expect(e.contractedMw).toBe(-40);
-    expect(e.contractCash).toBeCloseTo(-40 * 0.5 * 5, 5);
-  });
-
-  it('orders can only be changed before BM gate closure (T-60)', () => {
-    const s = setAssetTypeAction(step(fresh(shortDay), 9), 'bm'); // 04:30
-    expect(setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 1, bidMw: 0, bidPrice: null })).toBe(s); // 05:00 SP, gate 04:00
-  });
-
+describe('intra-SP power limit', () => {
   it('caps each 5-minute set point at the power rating', () => {
     let s = step(fresh(), 10);
     s = setDeviationAction(s, 30);
@@ -487,14 +449,96 @@ describe('BM unit: standing bids/offers and BOAs', () => {
     const e = findEntry(s.ledger, D0, 10)!;
     expect(Math.min(...e.deviationProfile!)).toBeGreaterThanOrEqual(-50);
   });
+});
+
+describe('BM unit: standing bids/offers and BOAs', () => {
+  const shortDay = day(D0, { niv: flat(400), sipOutturn: flat(200) });
+  const longDay = day(D0, { niv: flat(-400), sipOutturn: flat(-10) });
+  const SPS = Array.from({ length: 30 }, (_, i) => 10 + i);
+  const withOffers = (base: MarketDay, offer: number | null, bid: number | null) => {
+    let s = setAssetTypeAction(fresh(base), 'bm');
+    for (const sp of SPS) s = setBmOrderAction(s, { day: D0, sp, offerMw: offer !== null ? 20 : 0, offerPrice: offer, bidMw: bid !== null ? 20 : 0, bidPrice: bid });
+    return s;
+  };
+
+  it('in-merit offers are mostly accepted, some skipped; BOAs are partial, pay-as-bid, no imbalance', () => {
+    // Keep the battery charged so offers are always feasible.
+    let s = withOffers(shortDay, 50, null);
+    s = { ...s, battery: { ...s.battery, config: { ...s.battery.config, capacityMwh: 1000 }, currentSocMwh: 900 } };
+    s = step(s, 41);
+    const acc = s.bmAcceptances ?? [];
+    const accepted = acc.filter(a => a.status === 'accepted');
+    const skipped = acc.filter(a => a.status === 'skipped');
+    expect(accepted.length).toBeGreaterThan(10);
+    expect(skipped.length).toBeGreaterThan(2);
+    for (const a of accepted) {
+      expect(a.mw).toBeLessThanOrEqual(20);
+      expect(a.mw).toBeCloseTo(a.instructedMw! * (6 - a.startSubIdx!) / 6, 1);
+      const e = findEntry(s.ledger, D0, a.sp)!;
+      expect(e.contractedMw).toBeCloseTo(a.mw, 5);
+      expect(e.imbalanceMwh).toBe(0);
+      expect(e.contractCash).toBeCloseTo(a.mw * 0.5 * 50, 5);
+    }
+    for (const k of skipped) expect(findEntry(s.ledger, D0, k.sp)?.contractedMw ?? 0).toBe(0);
+    expect(s.events.some(ev => ev.id.startsWith('live-boa'))).toBe(true);
+  });
+
+  it('never accepts offers priced above the marginal price, nor for non-BM assets', () => {
+    expect(step(withOffers(shortDay, 250, null), 41).bmAcceptances ?? []).toHaveLength(0);
+    let t = fresh(shortDay);
+    t = setBmOrderAction(t, { day: D0, sp: 10, offerMw: 30, offerPrice: 0, bidMw: 0, bidPrice: null });
+    expect(step(t, 11).bmAcceptances ?? []).toHaveLength(0);
+  });
+
+  it('accepts bids when long (charge at your bid)', () => {
+    let s = withOffers(longDay, null, 5);
+    s = { ...s, battery: { ...s.battery, config: { ...s.battery.config, capacityMwh: 1000 }, currentSocMwh: 10 } };
+    s = step(s, 41);
+    const accepted = (s.bmAcceptances ?? []).filter(a => a.status === 'accepted');
+    expect(accepted.length).toBeGreaterThan(5);
+    const e = findEntry(s.ledger, D0, accepted[0].sp)!;
+    expect(e.contractedMw).toBeCloseTo(-accepted[0].mw, 5);
+    expect(e.contractCash).toBeCloseTo(-accepted[0].mw * 0.5 * 5, 5);
+  });
+
+  it('orders can only be changed before BM gate closure (T-60)', () => {
+    const s = setAssetTypeAction(step(fresh(shortDay), 9), 'bm'); // 04:30
+    expect(setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 1, bidMw: 0, bidPrice: null })).toBe(s); // 05:00 SP, gate 04:00
+  });
 
   it('a new session starts with an empty BM book (no BOAs from a previous run)', () => {
-    let s = setAssetTypeAction(fresh(shortDay), 'bm');
-    s = setBmOrderAction(s, { day: D0, sp: 10, offerMw: 30, offerPrice: 150, bidMw: 0, bidPrice: null });
-    s = step(s, 11);
-    expect(s.bmAcceptances).toHaveLength(1);
+    const s = step(withOffers(shortDay, 50, null), 41);
+    expect((s.bmAcceptances ?? []).length).toBeGreaterThan(0);
     const again = loadMarketDays(s, shortDay, day(D0 + DAY));
     expect(again.bmAcceptances).toHaveLength(0);
     expect(again.bmBook).toHaveLength(0);
+  });
+});
+
+
+describe('P&L incl. exchange fees and degradation', () => {
+  it('cash identity holds and the finished day is archived at midnight', () => {
+    let s = submitDayAheadBids(fresh(), [
+      { hour: 3, side: OrderSide.BUY, volumeMw: 40, price: 999 },
+      { hour: 18, side: OrderSide.SELL, volumeMw: 40, price: 0 },
+    ]);
+    s = step(s, 48 + 40); // deliver the auction day up to 20:00
+    s = chargeBatteryAction(s, 10);
+    s = step(s, 9); // past midnight of day 2 → day 2 archived
+    const ledgerSum = s.ledger.reduce((a, e) => a + e.contractCash + e.imbalanceCash + (e.feesCash ?? 0) + (e.degradationCash ?? 0), 0);
+    const archived = (s.pnlHistory ?? []).reduce((a, d) => a + d.net, 0);
+    const battery = s.battery.totalDischargeRevenue - s.battery.totalChargeCost;
+    expect(battery).toBeCloseTo(ledgerSum, 0);
+    const d2 = s.pnlHistory!.find(d => d.day === D0 + DAY)!;
+    expect(d2.fees).toBeCloseTo(-(40 * 0.5 * 4) * 0.05, 5); // 4 SPs × 20 MWh × £0.05
+    expect(d2.degradation).toBeLessThan(0);
+    expect(d2.net).toBeCloseTo(d2.da + d2.id + d2.bm + d2.imbalance + d2.fees + d2.degradation, 5);
+    expect(archived).toBeCloseTo(battery, 0);
+  });
+
+  it('dayPnl of today reflects delivered SPs only', () => {
+    let s = submitDayAheadBids(fresh(), [{ hour: 20, side: OrderSide.SELL, volumeMw: 20, price: 0 }]);
+    s = step(s, 48 + 10);
+    expect(dayPnl(s, D0 + DAY).da).toBe(0); // 20:00 not delivered yet
   });
 });

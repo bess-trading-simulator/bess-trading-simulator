@@ -4,7 +4,7 @@ import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getS
 import { createPriceGenerator, generateNextHour } from './priceGenerator';
 import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery } from './battery';
-import { generateFullAnalysis, imbalanceSettlementPrice, nivForecastError } from './ukMarket';
+import { generateFullAnalysis, imbalanceSettlementPrice, nivForecastError, mulberry32 } from './ukMarket';
 import type { TradePosition } from './ukMarket';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
@@ -12,6 +12,7 @@ import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions, setDeviationSetpoint, signedMw } from './settlement';
+import { dayPnl } from './pnl';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
 
@@ -132,6 +133,7 @@ export function loadMarketDays(state: GameState, today: MarketDay, nextIn: Marke
     // A new session starts with an empty BM book (no BOAs from a previous run).
     bmBook: [],
     bmAcceptances: [],
+    pnlHistory: [],
   });
 }
 
@@ -167,6 +169,9 @@ export function tickGameState(state: GameState): GameState {
     const today = s.nextDay.day === currentDayStart ? s.nextDay : syntheticMarketDay(currentDayStart, priceGenState.seed + newPriceGen.tickCount);
     const next = nextDayFrom(today, priceGenState.seed + newPriceGen.tickCount + 1);
     const carried = s.dayAhead.playerSchedule.filter(p => !p.delivered && p.deliveryDay >= currentDayStart);
+    // Archive the finished day's P&L before its positions/ledger are pruned.
+    const finished = dayPnl(s, prevDay);
+    s = { ...s, pnlHistory: [...(s.pnlHistory ?? []).filter(d => d.day !== prevDay), finished].slice(-60) };
     const cleared = s.nextDay.day === currentDayStart;
     s = {
       ...s,
@@ -410,15 +415,37 @@ function acceptBmOrders(state: GameState, day: number, sp: number, now: number):
     kind = 'bid'; price = order.bidPrice;
     mw = Math.min(order.bidMw, P + net, Math.max(0, cap - socAfterContract) / (0.5 * eff));
   }
-  mw = Math.floor(mw * 10) / 10;
   if (!kind || mw < 1) return state;
-  const acc: BmAcceptance = { day, sp, kind, mw, price, time: now };
+
+  // Real control-room behaviour (simplified, deterministic per SP):
+  //  - the deeper in merit (cheaper offer / higher bid vs the marginal price),
+  //    the more likely the acceptance;
+  //  - batteries are often "skipped" even when in merit (BM_SKIP_RATE);
+  //  - BOAs cover part of the requested volume and can start mid-SP.
+  const rng = mulberry32((Math.floor(day / DAY_MS) * 48 + sp) * 7919 + 13);
+  const margin = kind === 'offer' ? (sip - price) / Math.max(20, Math.abs(sip)) : (price - sip) / Math.max(20, Math.abs(sip));
+  const pAccept = Math.max(0.05, Math.min(0.95, 0.35 + 2 * margin));
+  const BM_SKIP_RATE = 0.3; // illustrative share of in-merit battery offers passed over
+  const skipped = rng() < BM_SKIP_RATE;
+  if (!skipped && rng() >= pAccept) return state; // not needed at your price this time
+  const startSubIdx = Math.floor(rng() * 3);                       // starts at :00, :05 or :10
+  const instructedMw = Math.max(1, Math.floor(mw * (0.5 + 0.5 * rng())));
+  const avgMw = skipped ? 0 : Math.round(instructedMw * (6 - startSubIdx) / 6 * 10) / 10;
+  const acc: BmAcceptance = {
+    day, sp, kind, mw: avgMw, price, time: now,
+    status: skipped ? 'skipped' : 'accepted', instructedMw, startSubIdx,
+  };
+  if (skipped) {
+    return { ...state, bmAcceptances: [...(state.bmAcceptances ?? []), acc].slice(-200) };
+  }
+  const startClock = new Date(day + sp * HALF_HOUR_MS + startSubIdx * SUB_STEP_MS);
+  const hhmm = `${String(startClock.getUTCHours()).padStart(2, '0')}:${String(startClock.getUTCMinutes()).padStart(2, '0')}`;
   const event: MarketEvent = {
     id: `live-boa-${day}-${sp}`,
     timestamp: now,
     headline: kind === 'offer'
-      ? `NESO BOA: your offer accepted — discharge +${mw} MW at £${price.toFixed(2)}`
-      : `NESO BOA: your bid accepted — charge ${mw} MW at £${price.toFixed(2)}`,
+      ? `NESO BOA from ${hhmm}: discharge +${instructedMw} MW at your offer £${price.toFixed(2)}`
+      : `NESO BOA from ${hhmm}: charge ${instructedMw} MW at your bid £${price.toFixed(2)}`,
     description: '',
     priceImpact: 0,
     category: 'policy',
@@ -431,7 +458,7 @@ function acceptBmOrders(state: GameState, day: number, sp: number, now: number):
       ...state.dayAhead,
       playerSchedule: [...state.dayAhead.playerSchedule, {
         period: sp, deliveryDay: day, market: 'bm',
-        action: kind === 'offer' ? 'discharge' : 'charge', mw, price, lockedAt: now,
+        action: kind === 'offer' ? 'discharge' : 'charge', mw: avgMw, price, lockedAt: now,
       }],
     },
   };

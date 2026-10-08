@@ -29,6 +29,7 @@ import type { HistoricalDay } from './data/historicalDays';
 import AboutProject from './components/AboutProject';
 import HeaderMenu from './components/HeaderMenu';
 import ScenarioBanner from './components/ScenarioBanner';
+import PnlDashboard from './components/PnlDashboard';
 import LiveNews from './components/LiveNews';
 
 export default function App() {
@@ -73,14 +74,14 @@ export default function App() {
       const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
       const ordered = VIEW_ORDER.filter((x) => next.includes(x));
       // If the currently open market tab was removed, fall back to a remaining tab.
-      if (view !== 'analysis' && view !== 'forecast' && !ordered.includes(view as SandboxView)) {
+      if (view !== 'analysis' && view !== 'forecast' && view !== 'pnl' && !ordered.includes(view as SandboxView)) {
         setView(ordered[0] ?? 'forecast');
       }
       return ordered;
     });
   };
 
-  const visibleTabs: AppView[] = enabledViews ? [...enabledViews, 'forecast', 'analysis'] : [];
+  const visibleTabs: AppView[] = enabledViews ? [...enabledViews, 'forecast', 'pnl', 'analysis'] : [];
 
 
   if (appMode === 'start') {
@@ -154,6 +155,9 @@ export default function App() {
             <>
               <button className={`hdr-tab ${view === 'forecast' ? 'active' : ''}`} onClick={() => setView('forecast')}>
                 Forecast
+              </button>
+              <button className={`hdr-tab ${view === 'pnl' ? 'active' : ''}`} onClick={() => setView('pnl')}>
+                P&amp;L
               </button>
               <span className="hdr-sep" />
             </>
@@ -282,6 +286,12 @@ export default function App() {
           <div className="grid-main-full">
             <RenewablesForecast dayAhead={state.dayAhead} />
             <SupportPanels state={state} lessonId={2} compact />
+          </div>
+        )}
+
+        {view === 'pnl' && (
+          <div className="grid-main-full">
+            <PnlDashboard state={state} />
           </div>
         )}
 

@@ -580,3 +580,20 @@ Tests: 65.
   limited by power/SoC; pay-as-bid; becomes a 'bm' contract (no imbalance); BOA as live
   news. UI `BmPanel.tsx`. Asset toggle in the Imbalance action panel.
 Tests: 72.
+
+## S4.14 Realistic BM acceptance + costs and P&L dashboard (2026-10-08)
+- BM (`acceptBmOrders`): in-merit orders are accepted with probability 0.35 + 2·margin
+  (margin = distance to the marginal price / |SIP|, clamp 5-95 %), 30 % illustrative SKIP
+  rate (in merit but passed over — recorded as status 'skipped'), partial volume (50-100 %
+  of offered MW) and start at :00/:05/:10 → SP-average MW = instructed × remaining share.
+  Deterministic per SP. BM panel shows skipped/partial BOAs; BM P&L counts accepted only.
+- Costs: exchange fee `EXCHANGE_FEE_PER_MWH` = £0.05/MWh on DA+ID volume (at delivery,
+  `feesCash`); degradation `battery.config.degradationCostPerMwh` (default £5) on metered
+  throughput at settlement (`degradationCash`). Both booked to battery cash; illustrative.
+  Network charges not modelled.
+- `engine/pnl.ts`: `spPnl` / `dayPnl` (DA, ID, BM, imbalance, fees, degradation, net,
+  throughput). Finished days archived in `state.pnlHistory` at midnight.
+- New header tab **P&L** (`PnlDashboard.tsx`): net today, session total, cards by source,
+  stacked per-SP chart, finished-days table.
+- Not done (explained to user): Europe/London day + 46/50-SP days.
+Tests: 75.

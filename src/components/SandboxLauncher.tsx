@@ -7,7 +7,7 @@ import type { HistoricalDay } from '../data/historicalDays';
 import { STRATEGIES } from '../data/strategies';
 
 export type SandboxMarket = 'GB';
-export type SandboxView = Exclude<AppView, 'analysis' | 'forecast'>;
+export type SandboxView = Exclude<AppView, 'analysis' | 'forecast' | 'pnl'>;
 
 interface Props {
   onConfirm: (views: SandboxView[], market: SandboxMarket, scenario: HistoricalDay | null) => void;
