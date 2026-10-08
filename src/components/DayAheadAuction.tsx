@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
-import type { DayAheadBid, DayAheadState, MarketDay, SettlementEntry } from '../engine/types';
+import type { DayAheadBid, DayAheadState, MarketDay, SettlementEntry, DaBlockOrder, HalfHourBid } from '../engine/types';
+import DaBlockOrders from './DaBlockOrders';
+import DayAheadHalfHour from './DayAheadHalfHour';
 import DayAheadToday from './DayAheadToday';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
@@ -19,6 +21,9 @@ interface Props {
   battery: BatteryState;
   onSubmitBids: (bids: DayAheadBid[]) => void;
   onWithdrawBids?: (hour?: number) => void;
+  onSubmitBlock?: (block: Omit<DaBlockOrder, 'id'>) => void;
+  onCancelBlock?: (id: string) => void;
+  onSubmitHalfHourBids?: (bids: HalfHourBid[]) => void;
 }
 
 type Draft = { buyMw: string; buyPx: string; sellMw: string; sellPx: string };
@@ -49,7 +54,7 @@ function bidsFromDraft(draft: Record<number, Draft>): DayAheadBid[] {
   return bids;
 }
 
-function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids }: Props) {
+function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, onWithdrawBids, onSubmitBlock, onCancelBlock }: Props) {
   const { isAuctionOpen, results, playerSchedule, deliveryDay, bids: submittedBids } = dayAhead;
   const [draft, setDraft] = useState<Record<number, Draft>>(() => draftFromBids(submittedBids));
   const [justSubmitted, setJustSubmitted] = useState(false);
@@ -140,11 +145,28 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
       .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0);
   });
 
+  // Hourly blocks (before clearing): assumed filled for feasibility, filled at
+  // forecast if the block's average forecast meets its limit.
+  const hourlyBlocks = (dayAhead.blocks ?? []).filter(b => b.auction === 'hourly');
+  if (isAuctionOpen) {
+    for (const b of hourlyBlocks) {
+      for (let sp = b.startSp; sp <= b.endSp; sp += 2) hourNet[Math.floor(sp / 2)] += b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw;
+    }
+  }
+  const blockFillsAtForecast = (b: DaBlockOrder) => {
+    let sum = 0;
+    for (let sp = b.startSp; sp <= b.endSp; sp++) sum += nextDay.daForecast[sp] ?? 0;
+    const avg = sum / (b.endSp - b.startSp + 1);
+    return b.side === OrderSide.BUY ? avg <= b.price : avg >= b.price;
+  };
+
   // Expected cash: only orders that would fill at the forecast price.
   const expectedNet: number[] = Array.from({ length: DA_HOURS }, (_, h) => (
     isAuctionOpen
       ? draftBids.filter(b => b.hour === h && bidFills(b, forecast[h]))
         .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0)
+        + hourlyBlocks.filter(b => b.startSp <= 2 * h && b.endSp >= 2 * h + 1 && blockFillsAtForecast(b))
+          .reduce((a, b) => a + (b.side === OrderSide.SELL ? b.volumeMw : -b.volumeMw), 0)
       : hourNet[h]
   ));
 
@@ -355,6 +377,16 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
 
       <div className="da-bid-section">
         {sig && <DeskSignalsPanel signals={sig} avgPrice={forecast.reduce((x, y) => x + Math.abs(y), 0) / DA_HOURS} />}
+        <DaBlockOrders
+          auction="hourly"
+          blocks={dayAhead.blocks ?? []}
+          results={dayAhead.blockResults ?? []}
+          isOpen={isAuctionOpen}
+          forecastBySp={Array.from({ length: 48 }, (_, sp) => forecast[Math.floor(sp / 2)])}
+          powerMw={P}
+          onSubmit={onSubmitBlock}
+          onCancel={onCancelBlock}
+        />
         {!isAuctionOpen && (
           <div className="da-gate-warning">
             Gate closed — the auction has cleared for {formatDeliveryDay(deliveryDay)}. Adjust positions in the Intraday market (tomorrow's products are now open there). The next auction opens after midnight.
@@ -495,21 +527,35 @@ function DeskSignalsPanel({ signals, avgPrice }: { signals: DeskSignals; avgPric
  * today's delivery of the schedule you won in YESTERDAY's auction.
  */
 export default function DayAheadAuction(props: Props) {
-  const [view, setView] = useState<'auction' | 'today'>('auction');
+  const [view, setView] = useState<'auction' | 'half' | 'today'>('auction');
   const today = getUtcDayStart(props.currentTime);
+  const d = props.dayAhead;
   return (
     <div className="da-views">
       <div className="da-view-toggle">
         <button className={`hdr-tab ${view === 'auction' ? 'active' : ''}`} onClick={() => setView('auction')}>
-          Auction · bid for {formatDeliveryDay(props.dayAhead.deliveryDay)}
+          Hourly auction · 09:20 · {formatDeliveryDay(d.deliveryDay)}
+        </button>
+        <button className={`hdr-tab ${view === 'half' ? 'active' : ''}`} onClick={() => setView('half')}>
+          30-min auction · 15:30 {d.hhAuctionOpen ? '· open' : ''}
         </button>
         <button className={`hdr-tab ${view === 'today' ? 'active' : ''}`} onClick={() => setView('today')}>
           Today · delivery {formatDeliveryDay(today)}
         </button>
       </div>
-      {view === 'auction'
-        ? <AuctionView {...props} />
-        : <DayAheadToday dayAhead={props.dayAhead} ledger={props.ledger ?? []} battery={props.battery} currentTime={props.currentTime} />}
+      {view === 'auction' && <AuctionView {...props} />}
+      {view === 'half' && (
+        <DayAheadHalfHour
+          dayAhead={d}
+          nextDay={props.nextDay}
+          battery={props.battery}
+          currentTime={props.currentTime}
+          onSubmitHalfHourBids={props.onSubmitHalfHourBids}
+          onSubmitBlock={props.onSubmitBlock}
+          onCancelBlock={props.onCancelBlock}
+        />
+      )}
+      {view === 'today' && <DayAheadToday dayAhead={d} ledger={props.ledger ?? []} battery={props.battery} currentTime={props.currentTime} />}
     </div>
   );
 }

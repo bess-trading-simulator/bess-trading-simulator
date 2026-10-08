@@ -149,3 +149,14 @@ export function firstIntradayTradableSp(currentTime: number): number {
   const msIntoDay = currentTime - getUtcDayStart(currentTime);
   return Math.floor((msIntoDay + ID_GATE_CLOSURE_MS) / HALF_HOUR_MS) + 1;
 }
+
+/** UTC timestamp of a UK local wall-clock time (hh:mm) on the UTC day `dayStart`. */
+export function ukLocalTimeOnDay(dayStart: number, hh: number, mm: number): number {
+  const asUtc = dayStart + (hh * 60 + mm) * 60_000;
+  return isBST(asUtc) ? asUtc - HOUR_MS : asUtc;
+}
+
+/** EPEX GB 30-min day-ahead auction gate closure: 15:30 UK on D-1. */
+export function getHalfHourGateClosureTime(currentTime: number): number {
+  return ukLocalTimeOnDay(getUtcDayStart(currentTime), 15, 30);
+}

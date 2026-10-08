@@ -106,6 +106,50 @@ export interface DayAheadBid {
   price: number; // limit £/MWh
 }
 
+/**
+ * Block order: one volume and one limit for a run of consecutive SPs, filled
+ * all-or-nothing. Accepted if the AVERAGE clearing price over the block meets
+ * the limit (buy: avg ≤ limit, sell: avg ≥ limit); each SP then settles at its
+ * own clearing price. A linked (child) block can only be accepted together
+ * with its parent; a profitable child can carry a slightly unprofitable parent
+ * (accepted if their combined surplus ≥ 0).
+ */
+export interface DaBlockOrder {
+  id: string;
+  auction: 'hourly' | 'half';
+  side: OrderSide;
+  startSp: number;
+  endSp: number; // inclusive
+  volumeMw: number;
+  price: number;
+  parentId?: string;
+}
+
+export interface BlockResult {
+  id: string;
+  avgClearing: number;
+  accepted: boolean;
+  reason: string;
+}
+
+/** Order in the EPEX GB 30-min auction (15:30 UK) for one half-hour SP. */
+export interface HalfHourBid {
+  sp: number;
+  side: OrderSide;
+  volumeMw: number;
+  price: number;
+}
+
+export interface HalfHourResult {
+  sp: number;
+  clearingPrice: number;
+  forecastPrice: number;
+  buyMw: number;
+  buyFilled: boolean;
+  sellMw: number;
+  sellFilled: boolean;
+}
+
 /** Result of one hourly product after the auction cleared (pay-as-cleared). */
 export interface AuctionResult {
   hour: number;
@@ -162,6 +206,8 @@ export interface MarketDay {
   date?: string;
   /** Desk forecast of the DA price, visible before the auction */
   daForecast: number[];
+  /** Desk forecast per half-hour for the 15:30 auction (set once the hourly auction cleared) */
+  daForecastHH?: number[];
   /** Market signals since the desk model ran (visible before clearing) */
   signals?: DeskSignals;
   /** Why the forecast differs from the actual price (revealed after clearing) */
@@ -274,6 +320,19 @@ export interface DayAheadState {
   todayResults?: AuctionResult[];
   /** The orders you submitted in yesterday's auction for TODAY */
   todayBids?: DayAheadBid[];
+  /** Block orders (hourly + 30-min auction) for the delivery day, and their results */
+  blocks?: DaBlockOrder[];
+  blockResults?: BlockResult[];
+  /** EPEX GB 30-min auction (15:30 UK): opens once the hourly auction cleared */
+  hhBids?: HalfHourBid[];
+  hhResults?: HalfHourResult[];
+  hhGateClosureTime?: number;
+  hhAuctionOpen?: boolean;
+  /** Yesterday's blocks / 30-min auction for TODAY */
+  todayBlocks?: DaBlockOrder[];
+  todayBlockResults?: BlockResult[];
+  todayHhBids?: HalfHourBid[];
+  todayHhResults?: HalfHourResult[];
   nextDeliveryDay: number;
   /** TODAY's DA prices (cleared in yesterday's auction; real days: Market Index Price) */
   forecastPrices: number[];
