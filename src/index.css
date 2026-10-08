@@ -7476,3 +7476,4 @@ body {
 .bm-boa { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 3px; border: 1px solid currentColor; }
 .bm-boa.offer { color: var(--discharge); }
 .bm-boa.bid { color: var(--charge); }
+.bm-boa-total { font-size: 12px; margin-left: auto; }
