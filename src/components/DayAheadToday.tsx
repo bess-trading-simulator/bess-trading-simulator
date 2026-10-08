@@ -1,6 +1,7 @@
 import type { DayAheadState, SettlementEntry } from '../engine/types';
 import { OrderSide } from '../engine/types';
 import { hourlyPrices, bidFills } from '../engine/dayAheadAuction';
+import { nivForecastError, NIV_FORECAST_BAND } from '../engine/ukMarket';
 import type { BatteryState } from '../engine/battery';
 import { getUtcDayStart, getSettlementPeriod, formatDeliveryDay } from '../engine/clock';
 import { findEntry, signedMw } from '../engine/settlement';
@@ -47,15 +48,39 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
     };
   });
 
-  // Projected SoC from now through the remaining net contracts.
+  // Projected SoC from now through the remaining net contracts, and the
+  // energy that can't be delivered (→ imbalance at SIP): short = sold energy
+  // you won't have, long = bought energy you can't store.
   const soc: (number | null)[] = new Array(48).fill(null);
+  const projected: (number | null)[] = new Array(48).fill(null); // MWh, − = short, + = long
   let s = battery.currentSocMwh;
   for (let sp = currentSp + 1; sp < 48; sp++) {
     const n = rows[sp].net;
-    s = n > 0 ? s - Math.min(n, P) * 0.5 : s + Math.min(-n, P) * 0.5 * eff;
-    s = Math.max(0, Math.min(cap, s));
+    if (n > 0) {
+      const need = Math.min(n, P) * 0.5;
+      if (need > s + 0.01) projected[sp] = -(need - s);
+      s = Math.max(0, s - need);
+    } else if (n < 0) {
+      const store = Math.min(-n, P) * 0.5 * eff;
+      if (store > cap - s + 0.01) projected[sp] = (store - (cap - s)) / eff;
+      s = Math.min(cap, s + store);
+    }
     soc[sp] = (s / cap) * 100;
   }
+  const projectedShort = projected.reduce<number>((a, v) => a + (v && v < 0 ? -v : 0), 0);
+  const projectedLong = projected.reduce<number>((a, v) => a + (v && v > 0 ? v : 0), 0);
+
+  // System state per SP: actual NIV/SIP once published; forecast ± band for the running SP.
+  const dayIdx = Math.floor(today / 86_400_000);
+  const systemFor = (sp: number) => {
+    if (sp < dayAhead.revealedPeriods) {
+      return { niv: dayAhead.niv[sp] ?? 0, sip: dayAhead.sipOutturn[sp] ?? null, band: 0 };
+    }
+    if (sp === currentSp) {
+      return { niv: (dayAhead.niv[sp] ?? 0) + nivForecastError(sp, dayIdx), sip: null, band: NIV_FORECAST_BAND };
+    }
+    return null;
+  };
 
   const daCash = rows.reduce((a, r) => a + r.daCash, 0);
   const daChargeMwh = rows.reduce((a, r) => a + (r.daMw < 0 ? -r.daMw * 0.5 : 0), 0);
@@ -121,11 +146,20 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
             <div className="kpi-sub">running: {spLabel(currentSp)}</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">Imbalance so far</div>
+            <div className="kpi-label">Imbalance</div>
             <div className="kpi-value-row">
               <span className={`kpi-value ${imbCash >= 0 ? 'positive' : 'negative'}`}>{imbCash >= 0 ? '+' : '−'}£{Math.abs(imbCash).toFixed(0)}</span>
             </div>
-            <div className="kpi-sub">{imbMwh.toFixed(1)} MWh off contract, at SIP</div>
+            <div className="kpi-sub">
+              {imbMwh.toFixed(1)} MWh so far at SIP
+              {(projectedShort > 0.05 || projectedLong > 0.05) && (
+                <span className="negative">
+                  {' '}· ⚠ projected {projectedShort > 0.05 ? `short ${projectedShort.toFixed(0)} MWh` : ''}
+                  {projectedShort > 0.05 && projectedLong > 0.05 ? ', ' : ''}
+                  {projectedLong > 0.05 ? `long ${projectedLong.toFixed(0)} MWh` : ''}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -206,7 +240,8 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
                 <th title="Intraday (and BM) trades for this SP">ID MW</th>
                 <th>Net contract</th>
                 <th title="Actually delivered (metered), + = discharge">Metered MW</th>
-                <th title="(metered − contracted) × 0.5 h, settled at SIP">Imbalance</th>
+                <th title="System length: NIV (+ = short, − = long) and the SIP once published; for the running SP a NIV forecast ± band">System</th>
+                <th title="(metered − contracted) × 0.5 h, settled at SIP. Short = you delivered less than you sold (you buy the gap at SIP); long = you delivered more / took less than you bought (you sell the gap at SIP).">Your imbalance</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -220,8 +255,40 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
                   <td style={{ color: r.idMw < 0 ? 'var(--charge)' : r.idMw > 0 ? 'var(--discharge)' : undefined }}>{signed(r.idMw)}</td>
                   <td>{signed(r.net)}</td>
                   <td>{r.metered == null ? '—' : signed(r.metered)}</td>
-                  <td className={r.imbCash == null ? 'muted' : r.imbCash >= 0 ? 'positive' : 'negative'}>
-                    {r.imbMwh == null ? '—' : Math.abs(r.imbMwh) < 0.005 ? '·' : `${signed(r.imbMwh, 1)} MWh · ${r.imbCash! >= 0 ? '+' : '−'}£${Math.abs(r.imbCash!).toFixed(0)}`}
+                  <td className="muted">
+                    {(() => {
+                      const sys = systemFor(r.sp);
+                      if (!sys) return '—';
+                      const short = sys.niv > 0;
+                      return (
+                        <span>
+                          <span style={{ color: short ? 'var(--discharge)' : 'var(--charge)' }}>{short ? 'short' : 'long'}</span>
+                          {' '}{sys.niv > 0 ? '+' : '−'}{Math.abs(sys.niv).toFixed(0)}{sys.band ? ` ±${sys.band}` : ''} MWh
+                          {sys.sip != null && <> · SIP £{sys.sip.toFixed(2)}</>}
+                          {sys.band > 0 && <small> (forecast)</small>}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className={r.imbCash == null ? (projected[r.sp] || (r.status === 'delivering' && r.metered != null && Math.abs(r.metered - r.net) >= 0.05) ? 'negative' : 'muted') : r.imbCash >= 0 ? 'positive' : 'negative'}>
+                    {r.imbMwh != null && Math.abs(r.imbMwh) >= 0.005 ? (() => {
+                      const youShort = r.imbMwh < 0;
+                      const sysShort = (dayAhead.niv[r.sp] ?? 0) > 0;
+                      const withSystem = youShort !== sysShort; // you were long while system short (or vice versa) → you helped
+                      return (
+                        <span title={withSystem
+                          ? 'Your imbalance went against the system imbalance — it helped balance the grid, usually at a favourable SIP.'
+                          : 'Your imbalance went the same way as the system — it made the imbalance worse, usually at an unfavourable SIP.'}>
+                          {youShort ? 'short' : 'long'} {Math.abs(r.imbMwh).toFixed(1)} MWh · {r.imbCash! >= 0 ? '+' : '−'}£{Math.abs(r.imbCash!).toFixed(0)}
+                          <small> · {withSystem ? 'helped system' : 'same as system'}</small>
+                        </span>
+                      );
+                    })()
+                      : r.imbMwh != null ? '·'
+                        : r.status === 'delivering' && r.metered != null && Math.abs(r.metered - r.net) >= 0.05
+                          ? `${r.metered < r.net ? 'short' : 'long'} ${Math.abs((r.metered - r.net) * 0.5).toFixed(1)} MWh · awaiting SIP`
+                          : projected[r.sp] ? `⚠ projected ${projected[r.sp]! < 0 ? 'short' : 'long'} ${Math.abs(projected[r.sp]!).toFixed(1)} MWh`
+                            : '—'}
                   </td>
                   <td className="muted">{r.status}</td>
                 </tr>
