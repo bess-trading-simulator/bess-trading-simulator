@@ -275,7 +275,14 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
             <tbody>
               {rows.map(r => (
                 <tr key={r.sp} className={`${r.sp === currentSp ? 'row-hovered' : ''} ${r.sp < currentSp ? 'muted' : ''}`}>
-                  <td>{spLabel(r.sp)}</td>
+                  <td>
+                    {spLabel(r.sp)}
+                    {(() => {
+                      // News that broke in this SP (only once it has happened — no spoilers).
+                      const news = (dayAhead.todayNews ?? []).filter(n => n.sp === r.sp && r.sp <= currentSp);
+                      return news.length ? <span className="sp-news" title={news.map(n => n.headline).join(' · ')}> ⚡</span> : null;
+                    })()}
+                  </td>
                   <td>£{r.price.toFixed(2)}</td>
                   <td className="muted">{r.forecast == null ? '—' : `£${r.forecast.toFixed(2)}`}</td>
                   <td style={{ color: r.daMw < 0 ? 'var(--charge)' : r.daMw > 0 ? 'var(--discharge)' : undefined }}>{signed(r.daMw)}</td>
