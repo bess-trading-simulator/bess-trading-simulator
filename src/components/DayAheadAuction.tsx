@@ -4,7 +4,7 @@ import DayAheadToday from './DayAheadToday';
 import { OrderSide } from '../engine/types';
 import type { BatteryState } from '../engine/battery';
 import { hoursUntilGateClosure, getGateClosureTime, formatDeliveryDay, getUtcDayStart, getSettlementPeriod } from '../engine/clock';
-import { DA_HOURS, hourlyPrices, bidFills } from '../engine/dayAheadAuction';
+import { DA_HOURS, hourlyPrices, bidFills, sanitizeBids } from '../engine/dayAheadAuction';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import HelpIcon from './HelpIcon';
 import { CheckCircle } from 'lucide-react';
@@ -99,8 +99,11 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
   const highT = sorted[Math.floor(DA_HOURS * 0.75)] ?? 0;
 
   const draftBids = bidsFromDraft(draft);
-  const submittedKey = JSON.stringify(submittedBids);
-  const isDirty = JSON.stringify(draftBids) !== submittedKey;
+  // Compare as order sets (independent of order/formatting) after the same
+  // validation the engine applies.
+  const orderKey = (bids: DayAheadBid[]) => sanitizeBids(bids, battery.config.powerRatingMw)
+    .map(b => `${b.hour}|${b.side}|${b.volumeMw}|${b.price.toFixed(2)}`).sort().join(';');
+  const isDirty = orderKey(draftBids) !== orderKey(submittedBids);
 
   // Starting SoC of the delivery day: current SoC played forward through today's
   // remaining (undelivered) net positions.
@@ -179,8 +182,10 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
 
   const submit = () => {
     if (!isAuctionOpen) return;
+    const clean = sanitizeBids(draftBids, P);
     onWithdrawBids?.();
-    onSubmitBids(draftBids);
+    onSubmitBids(clean);
+    setDraft(draftFromBids(clean)); // editor shows exactly what was submitted
     setJustSubmitted(true);
   };
 
