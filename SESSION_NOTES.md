@@ -597,3 +597,12 @@ Tests: 72.
   stacked per-SP chart, finished-days table.
 - Not done (explained to user): Europe/London day + 46/50-SP days.
 Tests: 75.
+
+## S4.15 UK local time (2026-10-08)
+- The simulator clock is now UK local WALL-CLOCK time (London), stored as epoch ms and
+  formatted with timeZone 'UTC'. Day = 00:00–24:00 UK, SP1 at 00:00 (as Elexon numbers SPs),
+  so SP labels, the clock and real data line up in summer too.
+- Gates are plain wall-clock times: DA 09:20, 30-min 15:30 (`isBST`/`ukLocalTimeOnDay`
+  removed). Clock shows a "UK" tag. Elexon ingest still maps real UTC timestamps to
+  settlement dates (`londonSettlementDate`).
+- Still simplified: 48 SPs every day (46/50-SP clock-change days not modelled).

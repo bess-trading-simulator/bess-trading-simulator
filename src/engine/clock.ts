@@ -1,5 +1,12 @@
 import type { SpeedPreset } from './types';
 
+// TIME CONVENTION: the simulator clock is UK local WALL-CLOCK time (London),
+// stored as epoch ms and always formatted with timeZone 'UTC'. A settlement day
+// runs 00:00–24:00 on this clock, SP1 starts at 00:00 — exactly how Elexon
+// numbers settlement periods in UK local time. Gate closures are therefore plain
+// wall-clock times (09:20, 15:30). Simplification: every day has 48 SPs (the
+// 46/50-SP clock-change days are not modelled).
+
 export const HOUR_MS = 3600_000;
 export const HALF_HOUR_MS = 1800_000;
 
@@ -71,33 +78,9 @@ export function formatDate(time: number): string {
   return `${days[d.getUTCDay()]} ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-// BST: last Sunday of March 01:00 UTC → last Sunday of October 01:00 UTC
-export function isBST(time: number): boolean {
-  const d = new Date(time);
-  const year = d.getUTCFullYear();
-  const month = d.getUTCMonth(); // 0-indexed: March=2, October=9
-
-  if (month > 2 && month < 9) return true;   // Apr–Sep: always BST
-  if (month < 2 || month > 9) return false;   // Nov–Feb: always GMT
-
-  // March: BST starts last Sunday at 01:00 UTC
-  if (month === 2) {
-    const lastSun = 31 - new Date(Date.UTC(year, 2, 31)).getUTCDay();
-    const switchTime = Date.UTC(year, 2, lastSun, 1, 0, 0);
-    return time >= switchTime;
-  }
-
-  // October: BST ends last Sunday at 01:00 UTC
-  const lastSun = 31 - new Date(Date.UTC(year, 9, 31)).getUTCDay();
-  const switchTime = Date.UTC(year, 9, lastSun, 1, 0, 0);
-  return time < switchTime;
-}
-
-// EPEX SPOT GB DA gate closure: 09:20 UK local time (08:20 UTC in BST, 09:20 UTC
-// in GMT). BST is decided at the gate instant itself, so clock-change days
-// (last Sunday of March / October) are right too.
+// EPEX SPOT GB DA gate closure: 09:20 UK local time (wall clock).
 function gateOnDay(dayStart: number): number {
-  return ukLocalTimeOnDay(dayStart, 9, 20);
+  return dayStart + (9 * 60 + 20) * 60_000;
 }
 
 export function getGateClosureTime(currentTime: number): number {
@@ -148,13 +131,7 @@ export function firstIntradayTradableSp(currentTime: number): number {
   return Math.floor((msIntoDay + ID_GATE_CLOSURE_MS) / HALF_HOUR_MS) + 1;
 }
 
-/** UTC timestamp of a UK local wall-clock time (hh:mm) on the UTC day `dayStart`. */
-export function ukLocalTimeOnDay(dayStart: number, hh: number, mm: number): number {
-  const asUtc = dayStart + (hh * 60 + mm) * 60_000;
-  return isBST(asUtc) ? asUtc - HOUR_MS : asUtc;
-}
-
 /** EPEX GB 30-min day-ahead auction gate closure: 15:30 UK on D-1. */
 export function getHalfHourGateClosureTime(currentTime: number): number {
-  return ukLocalTimeOnDay(getUtcDayStart(currentTime), 15, 30);
+  return getUtcDayStart(currentTime) + (15 * 60 + 30) * 60_000;
 }

@@ -31,7 +31,8 @@ export default function MarketClock({ currentTime, isPaused, speed, onTogglePaus
     <div className="market-clock">
       <span className="mc-sp">SP{getSettlementPeriod(currentTime)}</span>
       <span className="mc-date">{weekday} {dayMonth}</span>
-      <span className="mc-time">{formatHour(currentTime)}</span>
+      <span className="mc-time" title="UK local time (London)">{formatHour(currentTime)}</span>
+      <span className="mc-tz">UK</span>
       <span className="mc-status">
         <span className={`status-dot ${isPaused || speed === 'manual' ? 'paused' : 'running'}`} />
         <span className="mc-status-text">{isPaused ? 'Paused' : speed === 'manual' ? 'Manual' : 'Live'}</span>

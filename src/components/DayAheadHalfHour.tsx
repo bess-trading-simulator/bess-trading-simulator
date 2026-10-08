@@ -73,7 +73,7 @@ export default function DayAheadHalfHour({ dayAhead, nextDay, battery, currentTi
   const hourly = hourlyPrices(nextDay.daClearing);
   const fc = nextDay.daForecastHH ?? [];
   const results = new Map((dayAhead.hhResults ?? []).map(r => [r.sp, r]));
-  const gateUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' })
+  const gateUk = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit' })
     .format(new Date(dayAhead.hhGateClosureTime ?? currentTime));
   const hoursLeft = Math.max(0, ((dayAhead.hhGateClosureTime ?? currentTime) - currentTime) / 3_600_000);
 
