@@ -531,7 +531,8 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
           <div className="da-quick-panel im-action-panel">
             <div className="im-action-head">
               <Clock size={14} />
-              <span className="im-asset-toggle">
+              <span className="im-asset-label">Asset</span>
+              <span className="im-asset-toggle" role="tablist" aria-label="Asset registration">
                 <button className={`hdr-tab ${assetType === 'non-bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('non-bm')}
                   title="Non-BM asset (e.g. embedded, via a supplier/aggregator): no binding FPN — you can deliberately run long/short (NIV chasing).">Non-BM</button>
                 <button className={`hdr-tab ${assetType === 'bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('bm')}

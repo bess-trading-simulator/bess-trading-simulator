@@ -3,7 +3,6 @@ import type { GameState } from '../engine/types';
 import { getUtcDayStart, getSettlementPeriod, subStepIndex, SUB_STEPS_PER_SP, SUB_STEP_MS, HALF_HOUR_MS } from '../engine/clock';
 import { findEntry, deviationRange } from '../engine/settlement';
 import { nivEstimate, imbalanceSettlementPrice } from '../engine/ukMarket';
-import HelpIcon from './HelpIcon';
 import { ChevronRight } from 'lucide-react';
 
 interface Props {
@@ -51,7 +50,6 @@ export default function IntraSpControl({ state, onSetDeviation, onSubStep, hideS
   const short = est.niv > 0;
   const da = state.dayAhead.forecastPrices[sp] ?? 0;
   const expectedSip = imbalanceSettlementPrice(da, est.niv);
-  const freq = 50 - Math.max(-0.3, Math.min(0.3, est.niv / 2000));
   const boa = Math.abs(est.niv) < 80
     ? 'NESO taking few actions — system near balance'
     : short ? 'NESO accepting OFFERS (more generation) — system short' : 'NESO accepting BIDS (less generation) — system long';
@@ -65,22 +63,9 @@ export default function IntraSpControl({ state, onSetDeviation, onSubStep, hideS
 
   return (
     <div className="isp">
-      <div className="isp-indicators">
-        <div>
-          <span className="isp-label">NIV estimate · live</span>
-          <strong style={{ color: short ? 'var(--discharge)' : 'var(--charge)' }}>
-            {est.niv > 0 ? '+' : ''}{est.niv} {est.band > 0 && <small>±{est.band}</small>} MWh
-          </strong>
-          <span className="isp-sub">{short ? 'short' : 'long'} · sharpens every 5 min</span>
-        </div>
-        <div>
-          <span className="isp-label">BOA flow</span>
-          <span className="isp-sub isp-boa">{boa}</span>
-        </div>
-        <div>
-          <span className="isp-label">Frequency <HelpIcon text="Illustrative: derived from the live NIV estimate." /></span>
-          <strong>{freq.toFixed(2)} Hz</strong>
-        </div>
+      <div className="isp-boa-line">
+        <span className="isp-label">BOA flow</span> {boa}
+        <span className="muted"> · live NIV & frequency in the cards on the left sharpen every 5 min</span>
       </div>
 
       <div className="isp-intervals">

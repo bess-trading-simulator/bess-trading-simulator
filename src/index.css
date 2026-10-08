@@ -7450,8 +7450,11 @@ body {
 .sp-news { color: var(--discharge); cursor: help; }
 
 /* Intra-SP control + BM panel */
-.im-asset-toggle { display: inline-flex; gap: 10px; margin-right: auto; }
-.im-asset-toggle .hdr-tab { font-size: 12px; }
+.im-asset-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.im-asset-toggle { display: inline-flex; margin-right: auto; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.im-asset-toggle .hdr-tab { font-size: 12px; padding: 3px 10px; border-radius: 0; }
+.im-asset-toggle .hdr-tab.active { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); font-weight: 600; }
+.isp-boa-line { font-size: 12px; line-height: 1.4; }
 .isp { display: flex; flex-direction: column; gap: 8px; }
 .isp-indicators { display: grid; grid-template-columns: 1.2fr 1.6fr 0.8fr; gap: 8px; font-size: 12px; }
 .isp-indicators > div { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
