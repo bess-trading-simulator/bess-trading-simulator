@@ -12,7 +12,7 @@ import type { PlaceOrderInput } from '../engine/intradayBook';
 import type { BatteryConfig } from '../engine/battery';
 import type { HistoricalDay } from '../data/historicalDays';
 import { fetchLatestDay, fetchDayData } from '../engine/elexonApi';
-import { realMarketDay, templatedMarketDay, utcDateString } from '../engine/marketDay';
+import { realMarketDay, nextDayFrom, utcDateString } from '../engine/marketDay';
 import { autoSave, loadAutoSave, clearAutoSave, cacheElexonDay } from '../engine/persistence';
 
 export type DataSource = 'loading' | 'live' | 'synthetic';
@@ -29,7 +29,7 @@ function storeRealMode(on: boolean) {
 
 /** Saves from before the today/tomorrow split can't be migrated meaningfully. */
 function isCurrentSave(saved: GameState | null): saved is GameState {
-  return Boolean(saved && saved.nextDay && saved.intraday && Array.isArray(saved.ledger) && saved.dayAhead?.bids?.every(b => typeof b.hour === 'number'));
+  return Boolean(saved && saved.nextDay?.forecastModel && saved.intraday && Array.isArray(saved.ledger) && saved.dayAhead?.bids?.every(b => typeof b.hour === 'number'));
 }
 
 /**
@@ -48,7 +48,7 @@ async function fetchRealPair() {
     return { today: realMarketDay(latestDay - DAY_MS, prev), next: realMarketDay(latestDay, latest) };
   }
   const today = realMarketDay(latestDay, latest);
-  return { today, next: templatedMarketDay(latestDay + DAY_MS, latest.daPrices, latestDay / DAY_MS) };
+  return { today, next: nextDayFrom(today, latestDay / DAY_MS) };
 }
 
 export function useGameState() {

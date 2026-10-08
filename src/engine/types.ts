@@ -119,6 +119,21 @@ export interface AuctionResult {
   sellFilled: boolean;
 }
 
+/**
+ * Fundamental desk forecast: reference price (same SP, the day the forecast is
+ * made) + merit-order slope × change in residual load (demand − wind − solar).
+ */
+export interface ForecastModel {
+  /** £/MWh per GW of residual load, estimated from the reference day */
+  beta: number;
+  /** Reference DA price per SP (today's cleared price) */
+  ref: number[];
+  /** Change vs reference day, MW (+ = more demand / more wind / more solar) */
+  demandDelta: number[];
+  windDelta: number[];
+  solarDelta: number[];
+}
+
 /** All market data for one delivery day (48 SPs, UK settlement day). */
 export interface MarketDay {
   /** UTC midnight ms of the delivery day */
@@ -126,8 +141,12 @@ export interface MarketDay {
   source: 'real' | 'synthetic';
   /** ISO date (YYYY-MM-DD) for real days */
   date?: string;
-  /** Desk forecast of the DA price, visible before the auction (has realistic error) */
+  /** Desk forecast of the DA price, visible before the auction (fundamental model) */
   daForecast: number[];
+  /** How the desk forecast was built, per SP (set once the forecast is computed) */
+  forecastModel?: ForecastModel;
+  /** Synthetic days only: the "true" drivers behind the actual price, for post-clearing explanations */
+  truth?: { beta: number; shock: number[] };
   /** Actual DA price per SP (real: Market Index Price). Hidden until the auction clears. */
   daClearing: number[];
   sipOutturn: number[];
@@ -231,6 +250,9 @@ export interface DayAheadState {
   deliveryDay: number;
   /** Source of TODAY's market data */
   todaySource?: 'real' | 'synthetic';
+  /** Yesterday's auction for TODAY: the desk forecast it was bid on, and its results */
+  todayForecast?: number[];
+  todayResults?: AuctionResult[];
   nextDeliveryDay: number;
   /** TODAY's DA prices (cleared in yesterday's auction; real days: Market Index Price) */
   forecastPrices: number[];
