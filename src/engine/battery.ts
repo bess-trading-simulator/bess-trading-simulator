@@ -227,3 +227,35 @@ export function bookCash(state: BatteryState, amount: number): BatteryState {
     ? { ...state, totalDischargeRevenue: state.totalDischargeRevenue + amount }
     : { ...state, totalChargeCost: state.totalChargeCost - amount };
 }
+
+/**
+ * Re-dispatch one SP: replace an already executed net dispatch `oldMw` by
+ * `newMw` (signed, + = discharge). Physically the battery only ever ran the
+ * NET of contract + deviation, so the old leg is undone first (no phantom
+ * round-trip losses), then the new net is dispatched (clipped to limits).
+ */
+export function redispatchBattery(
+  state: BatteryState,
+  oldMw: number,
+  newMw: number,
+  timestamp: number,
+  logPrice: number,
+  durationHours = 0.5,
+): { newState: BatteryState; actualMw: number } {
+  const eff = state.config.efficiencyPct / 100;
+  let soc = state.currentSocMwh;
+  let charged = state.totalChargedMwh;
+  let discharged = state.totalDischargedMwh;
+  if (oldMw > 0) { soc += oldMw * durationHours; discharged -= oldMw * durationHours; }
+  else if (oldMw < 0) { const stored = -oldMw * durationHours * eff; soc -= stored; charged -= stored; }
+  soc = Math.max(0, Math.min(state.config.capacityMwh, soc));
+  const undone: BatteryState = {
+    ...state,
+    currentSocMwh: soc,
+    socPct: Math.round((soc / state.config.capacityMwh) * 10000) / 100,
+    totalChargedMwh: Math.max(0, charged),
+    totalDischargedMwh: Math.max(0, discharged),
+    totalCycles: Math.max(0, charged) / state.config.capacityMwh,
+  };
+  return dispatchBattery(undone, newMw, timestamp, logPrice, durationHours);
+}

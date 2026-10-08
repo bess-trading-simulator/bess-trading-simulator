@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import type { GameState } from '../engine/types';
-import { MarketType, OrderSide } from '../engine/types';
 import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay } from '../engine/clock';
 import { deviationRoom, findEntry } from '../engine/settlement';
 import { imbalanceSettlementPrice, nivForecastError, NIV_FORECAST_BAND } from '../engine/ukMarket';
@@ -44,7 +43,9 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
         key={sp}
         className={`niv-cell ${isCurrent ? 'current' : ''} ${isFuture ? 'future' : ''} ${!isRevealed && !isCurrent ? 'unrevealed' : ''}`}
         style={{ background: bg }}
-        title={`SP ${sp + 1} (${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}) · NIV ${v >= 0 ? '+' : ''}${v.toFixed(0)} MWh (${v >= 0 ? 'short' : 'long'})${trade ? ` · ${trade.direction} ${trade.isHit ? 'hit' : 'miss'}` : ''}`}
+        title={isFuture
+          ? `SP ${sp + 1} (${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}) · not yet known`
+          : `SP ${sp + 1} (${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}) · NIV ${isCurrent ? 'forecast ' : ''}${v >= 0 ? '+' : ''}${v.toFixed(0)} MWh (${v >= 0 ? 'short' : 'long'})${trade ? ` · ${trade.direction} ${trade.isHit ? 'hit' : 'miss'}` : ''}`}
       >
         {trade && (
           <span className={`niv-cell-mark ${trade.isHit ? 'hit' : 'miss'}`}>
@@ -223,6 +224,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
   // Today's SPOT (imbalance) trades. You acted on a forecast SIP but settled at
   // the actual one — the gap (Δ) is your realised forecast error.
   type ImbRow = {
+    kind: 'deliberate' | 'shortfall';
     timestamp: number;
     sp: number;
     direction: 'charge' | 'discharge';
@@ -234,36 +236,49 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
     settledPnL: number;    // P&L on the books (from settled price)
     isHit: boolean;        // direction matched the actual system state
   };
+  // Rows come from the settlement ledger so a DELIBERATE deviation (your call)
+  // is kept apart from imbalance caused by an UNDELIVERABLE contract (SoC/power).
   const imbRows: ImbRow[] = [];
-  for (const t of state.trades) {
-    if (t.marketType !== MarketType.SPOT) continue;
-    if (getUtcDayStart(t.timestamp) !== todayDay) continue;
-    const tDate = new Date(t.timestamp);
-    const tSp = tDate.getUTCHours() * 2 + (tDate.getUTCMinutes() >= 30 ? 1 : 0);
-    const nivAct = dayAhead.niv[tSp] ?? 0;
-    const daAt = dayAhead.forecastPrices[tSp] ?? t.price;
-    const forecastSip = imbalanceSettlementPrice(daAt, nivAct + nivForecastError(tSp, dayIdx));
-    const direction: 'charge' | 'discharge' = t.side === OrderSide.BUY ? 'charge' : 'discharge';
-    const energyMwh = t.volumeMw * 0.5;
-    const settledSip = t.price; // engine settled at the actual NIV
-    const settledPnL = direction === 'charge' ? -(settledSip * energyMwh) : (settledSip * energyMwh);
-    // Hit = helped the system: charge into a long system (NIV < 0), discharge into a short one (NIV > 0).
-    const isHit = (nivAct < 0 && direction === 'charge') || (nivAct > 0 && direction === 'discharge');
-    imbRows.push({
-      timestamp: t.timestamp, sp: tSp, direction, mw: t.volumeMw, energyMwh,
-      nivActual: nivAct, forecastSip, settledSip, settledPnL, isHit,
-    });
+  for (const e of state.ledger) {
+    if (e.deliveryDay !== todayDay || !e.settled || e.imbalancePrice == null) continue;
+    const sp = e.period;
+    const sip = e.imbalancePrice;
+    const nivAct = dayAhead.niv[sp] ?? 0;
+    const timestamp = todayDay + sp * 1_800_000;
+    if (Math.abs(e.deviationMw) >= 0.01) {
+      const direction: 'charge' | 'discharge' = e.deviationMw < 0 ? 'charge' : 'discharge';
+      const mw = Math.abs(e.deviationMw);
+      const energyMwh = mw * 0.5;
+      const daAt = dayAhead.forecastPrices[sp] ?? sip;
+      const forecastSip = imbalanceSettlementPrice(daAt, nivAct + nivForecastError(sp, dayIdx));
+      const settledPnL = (direction === 'discharge' ? 1 : -1) * sip * energyMwh;
+      // Hit = helped the system: charge into a long system (NIV < 0), discharge into a short one (NIV > 0).
+      const isHit = (nivAct < 0 && direction === 'charge') || (nivAct > 0 && direction === 'discharge');
+      imbRows.push({ kind: 'deliberate', timestamp, sp, direction, mw, energyMwh, nivActual: nivAct, forecastSip, settledSip: sip, settledPnL, isHit });
+    }
+    const shortfallMw = e.deliveredMw - e.contractedMw;
+    if (Math.abs(shortfallMw) >= 0.01) {
+      const mw = Math.abs(shortfallMw);
+      imbRows.push({
+        kind: 'shortfall', timestamp: timestamp + 1, sp,
+        direction: shortfallMw < 0 ? 'charge' : 'discharge', // short → you buy the gap; long → you sell it
+        mw, energyMwh: mw * 0.5, nivActual: nivAct, forecastSip: sip, settledSip: sip,
+        settledPnL: shortfallMw * 0.5 * sip, isHit: false,
+      });
+    }
   }
   imbRows.sort((a, b) => b.timestamp - a.timestamp);
 
-  const totalTrades = imbRows.length;
-  const hitTrades = imbRows.filter((r) => r.isHit).length;
+  // Hit rate and slippage judge YOUR calls only (not contract shortfalls).
+  const calls = imbRows.filter((r) => r.kind === 'deliberate');
+  const totalTrades = calls.length;
+  const hitTrades = calls.filter((r) => r.isHit).length;
   const dailyPnL = imbRows.reduce((acc, r) => acc + r.settledPnL, 0);
   const hitRatePct = totalTrades > 0 ? (hitTrades / totalTrades) * 100 : null;
 
   // Avg realised forecast error per MWh (|settled − forecast| settle price).
-  const avgSlippage = imbRows.length > 0
-    ? imbRows.reduce((s, r) => s + Math.abs(r.settledSip - r.forecastSip), 0) / imbRows.length
+  const avgSlippage = calls.length > 0
+    ? calls.reduce((s, r) => s + Math.abs(r.settledSip - r.forecastSip), 0) / calls.length
     : null;
 
   // NIV trend: last 12 SETTLED SPs (the running SP's NIV isn't known yet).
@@ -327,7 +342,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3><Activity size={16} /> Imbalance / Cashout</h3>
-          <HelpIcon text="Imbalance trading isn't a market — it's deliberately running long or short of your declared position to capture the cashout price (SIP). You can't actually see the live SIP, only signals that hint at the direction. The SIP shown for the current SP is the settlement truth, revealed ex-post." />
+          <HelpIcon text="Imbalance trading isn't a market — it's deliberately running long or short of your declared position to capture the cashout price (SIP). You can't see the live SIP — only signals that hint at the direction. The SIP of each SP is published after it ends and shown in the chart and the table below." />
           <span className="da-delivery-badge">
             SP {currentSp + 1} · <strong>{minutesLeft} min</strong> left
           </span>
@@ -718,6 +733,25 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
             <tbody>
               {imbRows.slice(0, 24).map((r) => {
                 const delta = r.settledSip - r.forecastSip;
+                // For a charge a HIGHER settle price is bad, for a discharge it is good.
+                const goodDelta = r.direction === 'charge' ? -delta : delta;
+                if (r.kind === 'shortfall') {
+                  return (
+                    <tr key={r.timestamp} className="im-row-shortfall">
+                      <td>{new Date(r.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</td>
+                      <td className="muted">{r.sp + 1}</td>
+                      <td colSpan={2} className="muted" title="Your contract couldn't be delivered (SoC or power limit) — the gap is settled at SIP">
+                        {r.direction === 'charge' ? 'Contract short' : 'Contract long'} {r.mw.toFixed(0)} MW
+                      </td>
+                      <td className={r.nivActual >= 0 ? 'positive' : 'negative'}>{r.nivActual >= 0 ? '+' : ''}{r.nivActual.toFixed(0)}</td>
+                      <td className="muted">—</td>
+                      <td>£{r.settledSip.toFixed(2)}</td>
+                      <td className="muted">—</td>
+                      <td className={r.settledPnL >= 0 ? 'positive' : 'negative'}>{r.settledPnL >= 0 ? '+' : ''}£{r.settledPnL.toFixed(2)}</td>
+                      <td className="muted">undeliverable</td>
+                    </tr>
+                  );
+                }
                 return (
                   <tr key={r.timestamp} className={r.isHit ? 'im-row-hit' : 'im-row-miss'}>
                     <td>{new Date(r.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })}</td>
@@ -731,7 +765,7 @@ export default function ImbalanceTrading({ state, onCharge, onDischarge }: Props
                     </td>
                     <td className="muted">£{r.forecastSip.toFixed(2)}</td>
                     <td>£{r.settledSip.toFixed(2)}</td>
-                    <td className={Math.abs(delta) < 0.5 ? 'muted' : delta >= 0 ? 'positive' : 'negative'}>
+                    <td className={Math.abs(delta) < 0.5 ? 'muted' : goodDelta >= 0 ? 'positive' : 'negative'}>
                       {delta >= 0 ? '+' : ''}£{delta.toFixed(2)}
                     </td>
                     <td className={r.settledPnL >= 0 ? 'positive' : 'negative'}>

@@ -546,3 +546,21 @@ Tests: 57.
 - UI: `ScenarioBanner` (briefing D-1 → live → debrief with teaching points at the end of
   the scenario day), `LiveNews` strip on Imbalance/Intraday, launcher/selector texts.
 Tests: 61.
+
+## S4.12 Imbalance bug hunt (2026-10-08) — code review + 2,250-run simulation
+Settlement core verified: every SP settled once at the right day's SIP (incl. SP47 over
+midnight, first SP, DST dates), cash == Σ ledger, |metered| ≤ P, SoC/energy consistent.
+Fixed:
+- Offsetting deviation caused phantom round-trip losses (contract + deviation dispatched
+  as two legs). Now `redispatchBattery` undoes the SP's previous net dispatch and runs
+  the new NET; `deviationRoom` measured on the net from SP-start SoC (a charging
+  contract can be flipped into a full discharge).
+- Imbalance table/KPIs: rows from the ledger — deliberate deviations (with forecast, Δ,
+  hit) separate from "Contract short/long · undeliverable"; hit rate & slippage count
+  only deliberate calls; Δ colour respects direction.
+- Leaks closed: MarketSignalPanel used actual running-SP NIV (now forecast); heatmap
+  tooltip for future SPs; session start price was SP1 SIP (now DA); cycle log showed
+  the actual SIP of the running SP (now expected SIP).
+- Rounding dust no longer creates £0 0.01 MW imbalance trades; NaN deviations ignored;
+  BM offers for the running/past SP rejected; stale help texts fixed.
+Tests: 65.
