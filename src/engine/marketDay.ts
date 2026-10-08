@@ -1,77 +1,121 @@
-// Market data for one delivery day, plus the desk's fundamental DA forecast.
+// Market data for one delivery day, plus the desk's DA forecast and signals.
 //
-// The DA auction is blind: before gate closure a trader only has a forecast.
-// The desk forecast here is FUNDAMENTAL and explainable:
-//   forecast(sp) = today's cleared DA price(sp)                      (reference)
-//                + β · Δresidual load(sp)                            (merit order)
-// where residual load = demand − wind − solar (day-ahead forecasts) and β
-// (£/MWh per GW) is estimated by regressing today's prices on today's residual
-// load. The actual clearing differs by what the model can't see: a steeper or
-// flatter merit order, gas/carbon moves, plant outages, interconnector flows
-// and other participants' bids.
+// The DA auction is blind: before gate closure a trader only has the desk's
+// price forecast — plus news of what changed since that model ran. Here the
+// actual price is the truth (real Elexon MID, or a simulated day), and the
+// desk forecast is the truth MINUS a set of causal errors:
+//   gas move · wind forecast revision · temperature vs normal · events
+//   (interconnector / outage / extra imports) · unexplained noise.
+// Each cause has a visible, slightly noisy SIGNAL, so a trader can reason about
+// which way the forecast is likely wrong. After clearing, the error is shown
+// split by cause. (Signals are simulated, also on real-data days.)
 
-import type { ForecastModel, MarketDay } from './types';
+import type { DeskEvent, DeskSignals, ForecastErrorBreakdown, MarketDay } from './types';
 import type { ElexonDayData } from './elexonApi';
 import { generateGBDayAhead, generateImbalanceDay, generateSIPOutturn, deriveForecastsFromNiv, mulberry32 } from './ukMarket';
 
 const DAY_MS = 86_400_000;
-const BETA_MIN = 1.5;
-const BETA_MAX = 12;
-/** Long-run prior for the GB merit-order slope (£/MWh per GW) */
-const BETA_PRIOR = 5;
-/** Weight of today's fit vs the prior: one day of data is noisy (the evening peak dominates) */
-const BETA_FIT_WEIGHT = 0.5;
+
+/** Rules of thumb (also shown to the player). */
+export const RULES = {
+  /** £/MWh per GW of residual load (merit-order slope) */
+  meritSlope: 5,
+  /** GW of extra demand per °C colder than normal */
+  demandPerDegree: 0.6,
+  /** share of the price set by gas plant in an SP (peaks/daytime ≈ gas-marginal) */
+  gasShare: (sp: number) => (sp >= 14 && sp <= 41 ? 0.9 : 0.6),
+  /** temperature effect is stronger at the evening peak */
+  peakWeight: (sp: number) => (sp >= 32 && sp <= 39 ? 1.4 : 1),
+};
 
 function round2(v: number): number { return Math.round(v * 100) / 100; }
+
+/** Approx. standard normal from a uniform RNG (Irwin–Hall). */
+function gauss(rng: () => number): number {
+  return rng() + rng() + rng() + rng() + rng() + rng() - 3;
+}
 
 function isWeekdayUtc(day: number): boolean {
   const dow = new Date(day).getUTCDay();
   return dow > 0 && dow < 6;
 }
 
-/** Residual load (MW) per SP from day-ahead forecasts: demand − wind − solar. */
-export function residualLoad(d: Pick<MarketDay, 'demandForecast' | 'windForecast' | 'solarForecast'>): number[] {
-  return d.demandForecast.map((dem, sp) => dem - (d.windForecast[sp] ?? 0) - (d.solarForecast[sp] ?? 0));
-}
-
 function hasDrivers(d: Pick<MarketDay, 'demandForecast'>): boolean {
   return d.demandForecast.some((v) => v > 0);
 }
 
-/**
- * Merit-order slope (£/MWh per GW of residual load): least-squares fit on one
- * day of prices, shrunk halfway toward a long-run prior and clamped to a
- * plausible GB range.
- */
-export function estimateBeta(day: Pick<MarketDay, 'daClearing' | 'demandForecast' | 'windForecast' | 'solarForecast'>): number {
-  if (!hasDrivers(day)) return BETA_PRIOR;
-  const x = residualLoad(day).map((v) => v / 1000);
-  const y = day.daClearing;
-  const n = Math.min(x.length, y.length);
-  const mx = x.slice(0, n).reduce((a, b) => a + b, 0) / n;
-  const my = y.slice(0, n).reduce((a, b) => a + b, 0) / n;
-  let sxy = 0, sxx = 0;
-  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; }
-  const fit = sxx > 1e-6 ? sxy / sxx : BETA_PRIOR;
-  const beta = BETA_FIT_WEIGHT * fit + (1 - BETA_FIT_WEIGHT) * BETA_PRIOR;
-  return round2(Math.max(BETA_MIN, Math.min(BETA_MAX, beta)));
+const spTime = (sp: number) => `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`;
+
+const INTERCONNECTORS = ['IFA', 'IFA2', 'BritNed', 'NSL', 'Nemo', 'ElecLink', 'Viking'];
+
+function makeEvents(rng: () => number, prices: number[]): DeskEvent[] {
+  const events: DeskEvent[] = [];
+  const window = () => {
+    const start = 10 + Math.floor(rng() * 30);
+    return { startSp: start, endSp: Math.min(47, start + 3 + Math.floor(rng() * 7)) };
+  };
+  const level = Math.max(30, prices.reduce((a, b) => a + Math.abs(b), 0) / prices.length);
+  const r = rng();
+  if (r < 0.18) {
+    const w = window();
+    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
+    events.push({ kind: 'interconnector', ...w, confirmed: rng() < 0.8,
+      headline: `${ic} interconnector: import capacity cut ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
+      effect: round2(level * (0.1 + rng() * 0.2)) });
+  } else if (r < 0.32) {
+    const w = window();
+    events.push({ kind: 'outage', ...w, confirmed: rng() < 0.75,
+      headline: `CCGT unit tripped / unavailable ${spTime(w.startSp)}–${spTime(w.endSp + 1)} (REMIT)`,
+      effect: round2(level * (0.08 + rng() * 0.15)) });
+  } else if (r < 0.42) {
+    const w = window();
+    events.push({ kind: 'imports', ...w, confirmed: rng() < 0.7,
+      headline: `Continental prices low: higher GB imports expected ${spTime(w.startSp)}–${spTime(w.endSp + 1)}`,
+      effect: -round2(level * (0.06 + rng() * 0.12)) });
+  }
+  // False alarm: plausible headline, no effect, always unconfirmed.
+  if (rng() < 0.15) {
+    const w = window();
+    const ic = INTERCONNECTORS[Math.floor(rng() * INTERCONNECTORS.length)];
+    events.push({ kind: 'interconnector', ...w, confirmed: false,
+      headline: `Rumour: ${ic} trip risk ${spTime(w.startSp)}–${spTime(w.endSp + 1)} (unconfirmed)`, effect: 0 });
+  }
+  return events;
 }
 
-/** Build the fundamental desk forecast for `next`, made with today's information. */
-export function withFundamentalForecast(next: MarketDay, today: MarketDay): MarketDay {
-  const beta = estimateBeta(today);
-  const usable = hasDrivers(today) && hasDrivers(next);
-  const delta = (a: number[], b: number[]) => a.map((v, sp) => (usable ? v - (b[sp] ?? 0) : 0));
-  const model: ForecastModel = {
-    beta,
-    ref: today.daClearing.slice(0, 48),
-    demandDelta: delta(next.demandForecast, today.demandForecast),
-    windDelta: delta(next.windForecast, today.windForecast),
-    solarDelta: delta(next.solarForecast, today.solarForecast),
+/**
+ * Build the desk forecast for a day whose actual DA price is known to the
+ * engine: forecast = actual − (gas + wind + temperature + event + noise).
+ * Deterministic per seed.
+ */
+export function withDeskForecast(day: MarketDay, seed: number): MarketDay {
+  const rng = mulberry32(seed + 31337);
+  const actual = day.daClearing;
+
+  // True causes (the desk model doesn't know these yet).
+  const gasTrue = Math.max(-10, Math.min(10, gauss(rng) * 4));           // %
+  const tempTrue = Math.max(-5, Math.min(5, gauss(rng) * 1.5));          // °C
+  let w = gauss(rng) * 1200;
+  const windTrue = actual.map(() => { w = 0.92 * w + gauss(rng) * 350; return Math.round(w); }); // MW
+  const events = makeEvents(rng, actual);
+
+  const gas = actual.map((p, sp) => round2((gasTrue / 100) * RULES.gasShare(sp) * Math.abs(p)));
+  const wind = windTrue.map((mw) => round2(-RULES.meritSlope * mw / 1000));
+  const temperature = actual.map((_, sp) => round2(-tempTrue * RULES.demandPerDegree * RULES.meritSlope * RULES.peakWeight(sp)));
+  const event = actual.map((_, sp) => round2(events.reduce((a, e) => a + (sp >= e.startSp && sp <= e.endSp ? e.effect : 0), 0)));
+  const noise = actual.map((p) => round2(gauss(rng) * Math.max(2, Math.abs(p) * 0.02)));
+  const errors: ForecastErrorBreakdown = { gas, wind, temperature, event, noise };
+
+  const daForecast = actual.map((p, sp) => round2(p - gas[sp] - wind[sp] - temperature[sp] - event[sp] - noise[sp]));
+
+  // What the trader sees: the causes, measured with a little noise.
+  const signals: DeskSignals = {
+    gasPct: round2(gasTrue + gauss(rng) * 0.8),
+    windRevisionMw: windTrue.map((mw) => Math.round(mw + gauss(rng) * 300)),
+    tempAnomalyC: round2(tempTrue + gauss(rng) * 0.3),
+    events,
   };
-  const daForecast = model.ref.map((ref, sp) =>
-    round2(ref + beta * (model.demandDelta[sp] - model.windDelta[sp] - model.solarDelta[sp]) / 1000));
-  return { ...next, daForecast, forecastModel: model };
+  return { ...day, daForecast, signals, forecastErrors: errors };
 }
 
 /** Fully synthetic first day (stylised GB shape, NIV from wind/demand drivers, model SIP). */
@@ -98,9 +142,8 @@ export function syntheticMarketDay(day: number, seed: number): MarketDay {
 
 /**
  * Simulated next day derived from `today` (real or synthetic): weather and
- * demand change, and the actual DA price follows the residual-load change
- * through a "true" merit-order slope plus market shocks the desk can't see.
- * Includes the desk's fundamental forecast.
+ * demand change and the actual DA price follows the residual-load change along
+ * the merit order, plus a day-level move and noise. Includes the desk forecast.
  */
 export function nextDayFrom(today: MarketDay, seed: number): MarketDay {
   const day = today.day + DAY_MS;
@@ -112,31 +155,30 @@ export function nextDayFrom(today: MarketDay, seed: number): MarketDay {
   const solarFactor = 0.5 + rng();
 
   const base = hasDrivers(today) ? today : syntheticMarketDay(today.day, seed);
-  const windForecast = base.windForecast.map((w, sp) => Math.max(0, Math.round(w * windFactor * (1 + windTilt * (sp / 47 - 0.5)))));
-  const demandForecast = base.demandForecast.map((d) => Math.round(d * demandFactor));
-  const solarForecast = base.solarForecast.map((s) => Math.max(0, Math.round(s * solarFactor)));
+  const windForecast = base.windForecast.map((v, sp) => Math.max(0, Math.round(v * windFactor * (1 + windTilt * (sp / 47 - 0.5)))));
+  const demandForecast = base.demandForecast.map((v) => Math.round(v * demandFactor));
+  const solarForecast = base.solarForecast.map((v) => Math.max(0, Math.round(v * solarFactor)));
 
   // Forecast errors (outturn − forecast) and the NIV they produce.
   const err = generateImbalanceDay(seed + 2000, isWeekdayUtc(day));
-  const windOutturn = windForecast.map((w, sp) => Math.max(0, w + (err.windOutturn[sp] - err.windForecast[sp])));
-  const demandOutturn = demandForecast.map((d, sp) => d + (err.demandOutturn[sp] - err.demandForecast[sp]));
-  const solarOutturn = solarForecast.map((s, sp) => Math.max(0, s + (err.solarOutturn[sp] - err.solarForecast[sp])));
+  const windOutturn = windForecast.map((v, sp) => Math.max(0, v + (err.windOutturn[sp] - err.windForecast[sp])));
+  const demandOutturn = demandForecast.map((v, sp) => v + (err.demandOutturn[sp] - err.demandForecast[sp]));
+  const solarOutturn = solarForecast.map((v, sp) => Math.max(0, v + (err.solarOutturn[sp] - err.solarForecast[sp])));
 
-  // Actual DA price: reference + true slope × Δresidual load + market shock.
-  const betaTrue = round2(estimateBeta(today) * (0.75 + rng() * 0.6));
-  const rlToday = residualLoad(base);
-  const rlNext = residualLoad({ demandForecast, windForecast, solarForecast });
-  const level = (rng() - 0.5) * 2 * Math.max(4, 0.05 * Math.abs(today.daClearing.reduce((a, b) => a + b, 0) / 48)); // gas/carbon day move
+  // Actual DA price: today + merit-order slope × Δresidual load + day move + noise.
+  const rl = (dem: number[], wnd: number[], sol: number[]) => dem.map((v, sp) => v - wnd[sp] - sol[sp]);
+  const rlToday = rl(base.demandForecast, base.windForecast, base.solarForecast);
+  const rlNext = rl(demandForecast, windForecast, solarForecast);
+  const slope = RULES.meritSlope * (0.75 + rng() * 0.6);
+  const avg = today.daClearing.reduce((a, b) => a + Math.abs(b), 0) / 48;
+  const level = (rng() - 0.5) * 2 * Math.max(4, 0.05 * avg);
   let ar = 0;
-  const shock = today.daClearing.map((p) => {
-    const sigma = Math.max(3, Math.abs(p) * 0.05);
-    ar = 0.75 * ar + (rng() - 0.5) * 2 * sigma * 0.7;
-    const event = rng() < 0.03 ? (rng() < 0.65 ? 1 : -1) * (20 + rng() * 50) : 0; // outage / IC trip / surprise
-    return round2(level + ar + event);
+  const daClearing = today.daClearing.map((p, sp) => {
+    ar = 0.75 * ar + (rng() - 0.5) * 2 * Math.max(3, Math.abs(p) * 0.05) * 0.7;
+    return round2(p + slope * (rlNext[sp] - rlToday[sp]) / 1000 + level + ar);
   });
-  const daClearing = today.daClearing.map((p, sp) => round2(p + betaTrue * (rlNext[sp] - rlToday[sp]) / 1000 + shock[sp]));
 
-  const next: MarketDay = {
+  return withDeskForecast({
     day,
     source: 'synthetic',
     daForecast: daClearing,
@@ -145,18 +187,10 @@ export function nextDayFrom(today: MarketDay, seed: number): MarketDay {
     niv: err.niv,
     demandForecast, windForecast, solarForecast,
     demandOutturn, windOutturn, solarOutturn,
-    truth: { beta: betaTrue, shock },
-  };
-  // The desk compares tomorrow's forecasts with today's (base supplies drivers if today lacks them).
-  return withFundamentalForecast(next, {
-    ...today,
-    demandForecast: base.demandForecast,
-    windForecast: base.windForecast,
-    solarForecast: base.solarForecast,
-  });
+  }, seed);
 }
 
-/** Real Elexon day: MID as DA price, real SIP/NIV/forecasts/outturns. Forecast is set by withFundamentalForecast. */
+/** Real Elexon day: MID as DA price, real SIP/NIV/forecasts/outturns. The desk forecast is added by withDeskForecast. */
 export function realMarketDay(day: number, data: ElexonDayData): MarketDay {
   return {
     day,

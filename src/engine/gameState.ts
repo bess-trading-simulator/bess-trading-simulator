@@ -9,7 +9,7 @@ import type { TradePosition } from './ukMarket';
 import { maybeGenerateEvent } from './events';
 import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
-import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withFundamentalForecast, todayFromState } from './marketDay';
+import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast } from './marketDay';
 import { clearHourlyAuction, sanitizeBids } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions } from './settlement';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder } from './intradayBook';
@@ -94,7 +94,7 @@ export function createGameState(): GameState {
  * delivery day. Used for live data and scenarios.
  */
 export function loadMarketDays(state: GameState, today: MarketDay, nextIn: MarketDay): GameState {
-  const next = nextIn.forecastModel ? nextIn : withFundamentalForecast(nextIn, today);
+  const next = nextIn.signals ? nextIn : withDeskForecast(nextIn, Math.floor(nextIn.day / DAY_MS));
   const clock = createClock(new Date(today.day));
   const firstSip = today.sipOutturn[0] ?? 0;
   const initialPrice = {
@@ -129,7 +129,7 @@ export function loadMarketDays(state: GameState, today: MarketDay, nextIn: Marke
  */
 export function replaceNextDay(state: GameState, next: MarketDay): GameState {
   if (next.day !== state.nextDay.day || !state.dayAhead.isAuctionOpen) return state;
-  return { ...state, nextDay: withFundamentalForecast(next, todayFromState(state)) };
+  return { ...state, nextDay: withDeskForecast(next, Math.floor(next.day / DAY_MS)) };
 }
 
 export function tickGameState(state: GameState): GameState {

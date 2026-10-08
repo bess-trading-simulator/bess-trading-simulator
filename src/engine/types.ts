@@ -119,19 +119,38 @@ export interface AuctionResult {
   sellFilled: boolean;
 }
 
+/** A news item the desk sees before gate closure (effect on price is hidden). */
+export interface DeskEvent {
+  kind: 'interconnector' | 'outage' | 'imports';
+  startSp: number;
+  endSp: number; // inclusive
+  headline: string;
+  confirmed: boolean;
+  /** £/MWh effect on the actual price while active (0 = false alarm). Hidden in the UI before clearing. */
+  effect: number;
+}
+
 /**
- * Fundamental desk forecast: reference price (same SP, the day the forecast is
- * made) + merit-order slope × change in residual load (demand − wind − solar).
+ * What changed since the desk's price model ran — visible before gate closure,
+ * slightly noisy. Each signal explains part of (actual − forecast).
  */
-export interface ForecastModel {
-  /** £/MWh per GW of residual load, estimated from the reference day */
-  beta: number;
-  /** Reference DA price per SP (today's cleared price) */
-  ref: number[];
-  /** Change vs reference day, MW (+ = more demand / more wind / more solar) */
-  demandDelta: number[];
-  windDelta: number[];
-  solarDelta: number[];
+export interface DeskSignals {
+  /** Overnight gas (NBP day-ahead) move, % */
+  gasPct: number;
+  /** Latest weather run vs the model's wind, per SP, MW (+ = more wind) */
+  windRevisionMw: number[];
+  /** Temperature vs seasonal normal, °C (− = colder → more demand) */
+  tempAnomalyC: number;
+  events: DeskEvent[];
+}
+
+/** actual − forecast per SP, split by cause (£/MWh). */
+export interface ForecastErrorBreakdown {
+  gas: number[];
+  wind: number[];
+  temperature: number[];
+  event: number[];
+  noise: number[];
 }
 
 /** All market data for one delivery day (48 SPs, UK settlement day). */
@@ -141,12 +160,12 @@ export interface MarketDay {
   source: 'real' | 'synthetic';
   /** ISO date (YYYY-MM-DD) for real days */
   date?: string;
-  /** Desk forecast of the DA price, visible before the auction (fundamental model) */
+  /** Desk forecast of the DA price, visible before the auction */
   daForecast: number[];
-  /** How the desk forecast was built, per SP (set once the forecast is computed) */
-  forecastModel?: ForecastModel;
-  /** Synthetic days only: the "true" drivers behind the actual price, for post-clearing explanations */
-  truth?: { beta: number; shock: number[] };
+  /** Market signals since the desk model ran (visible before clearing) */
+  signals?: DeskSignals;
+  /** Why the forecast differs from the actual price (revealed after clearing) */
+  forecastErrors?: ForecastErrorBreakdown;
   /** Actual DA price per SP (real: Market Index Price). Hidden until the auction clears. */
   daClearing: number[];
   sipOutturn: number[];
