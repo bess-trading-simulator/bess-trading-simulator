@@ -11,7 +11,6 @@ import ScenarioSelector from './components/ScenarioSelector';
 import SaveManager from './components/SaveManager';
 import ThemeToggle from './components/ThemeToggle';
 import Tutorial from './components/Tutorial';
-import { AlertTriangle } from 'lucide-react';
 import TrainingLesson from './components/TrainingLesson';
 import type { LessonId } from './components/TrainingLesson';
 import PositionBook from './components/PositionBook';
@@ -128,9 +127,6 @@ export default function App() {
       <header className="app-header">
         <div className="header-left">
           <h1>BESS Trader</h1>
-          {state.triadAlert && (
-            <span className="triad-alert"><AlertTriangle size={14} /> TRIAD</span>
-          )}
           <span className="hdr-sep" />
           <nav className="hdr-tabs" data-tutorial="dayahead-tab">
             {visibleTabs.includes('imbalance') && (
@@ -202,7 +198,7 @@ export default function App() {
                 ))}
               </select>
             </div>
-            <button className="btn header-menu-item" onClick={reset}>
+            <button className="btn header-menu-item" onClick={() => { reset(); setActiveScenarioId('live'); }}>
               Reset day
             </button>
             {visibleTabs.includes('analysis') && (
