@@ -1,17 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { GameState, DayAheadBid, SpeedPreset, BmDirection, DaBlockOrder, HalfHourBid, AssetType, BmStandingOrder } from '../engine/types';
-import { GameMode, SPEED_MS } from '../engine/types';
+import type { GameState, DayAheadBid, SpeedPreset, DaBlockOrder, HalfHourBid, AssetType, BmStandingOrder } from '../engine/types';
+import { SPEED_MS } from '../engine/types';
 import {
   createGameState, tickGameState, stepForwardAction,
-  chargeBatteryAction, dischargeBatteryAction, submitDayAheadBids, withdrawDayAheadBids,
-  reconfigureBattery, intradayChargeAction, intradayDischargeAction, loadScenario,
-  submitBmOfferAction, loadMarketDays, replaceNextDay,
+  submitDayAheadBids, withdrawDayAheadBids, loadScenario,
+  loadMarketDays, replaceNextDay,
   placeIntradayOrderAction, cancelIntradayOrderAction,
-  submitBlockOrderAction, cancelBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
+  submitHalfHourBidsAction, setBlockOrdersAction,
   subStepAction, setDeviationAction, setAssetTypeAction, setBmOrderAction,
 } from '../engine/gameState';
 import type { PlaceOrderInput } from '../engine/intradayBook';
-import type { BatteryConfig } from '../engine/battery';
 import type { HistoricalDay } from '../data/historicalDays';
 import { fetchLatestDay, fetchDayData } from '../engine/elexonApi';
 import { realMarketDay, nextDayFrom, utcDateString } from '../engine/marketDay';
@@ -166,13 +164,7 @@ export function useGameState() {
     setState(prev => stepForwardAction(prev));
   }, []);
 
-  const chargeBattery = useCallback((mw: number) => {
-    setState(prev => chargeBatteryAction(prev, mw));
-  }, []);
 
-  const dischargeBattery = useCallback((mw: number) => {
-    setState(prev => dischargeBatteryAction(prev, mw));
-  }, []);
 
   const placeDayAheadBids = useCallback((bids: DayAheadBid[]) => {
     setState(prev => submitDayAheadBids(prev, bids));
@@ -182,13 +174,7 @@ export function useGameState() {
     setState(prev => withdrawDayAheadBids(prev, hour));
   }, []);
 
-  const submitBlockOrder = useCallback((input: Omit<DaBlockOrder, 'id'>) => {
-    setState(prev => submitBlockOrderAction(prev, input));
-  }, []);
 
-  const cancelBlockOrder = useCallback((id: string) => {
-    setState(prev => cancelBlockOrderAction(prev, id));
-  }, []);
 
   const subStep = useCallback(() => setState(prev => subStepAction(prev)), []);
   const setDeviation = useCallback((mw: number) => setState(prev => setDeviationAction(prev, mw)), []);
@@ -211,40 +197,11 @@ export function useGameState() {
     setState(prev => cancelIntradayOrderAction(prev, orderId));
   }, []);
 
-  const advanceTutorial = useCallback(() => {
-    setState(prev => ({
-      ...prev,
-      tutorial: {
-        ...prev.tutorial,
-        currentStep: prev.tutorial.currentStep + 1,
-        isActive: prev.tutorial.currentStep + 1 < 10,
-        completed: prev.tutorial.currentStep + 1 >= 10,
-      },
-    }));
-  }, []);
 
-  const skipTutorial = useCallback(() => {
-    setState(prev => ({
-      ...prev,
-      tutorial: { currentStep: 0, isActive: false, completed: true },
-    }));
-  }, []);
 
-  const setMode = useCallback((mode: GameMode) => {
-    setState(prev => ({ ...prev, mode }));
-  }, []);
 
-  const intradayCharge = useCallback((sp: number, mw: number) => {
-    setState(prev => intradayChargeAction(prev, sp, mw));
-  }, []);
 
-  const intradayDischarge = useCallback((sp: number, mw: number) => {
-    setState(prev => intradayDischargeAction(prev, sp, mw));
-  }, []);
 
-  const submitBmOffer = useCallback((period: number, direction: BmDirection, mw: number, price: number) => {
-    setState(prev => submitBmOfferAction(prev, { period, direction, mw, price }));
-  }, []);
 
   const playScenario = useCallback((day: HistoricalDay) => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -273,9 +230,6 @@ export function useGameState() {
     startLive();
   }, [startLive]);
 
-  const configureBattery = useCallback((config: Partial<BatteryConfig>) => {
-    setState(prev => reconfigureBattery(prev, config));
-  }, []);
 
   const loadSavedState = useCallback((saved: GameState) => {
     if (!isCurrentSave(saved)) {
@@ -298,12 +252,10 @@ export function useGameState() {
 
   return {
     state, dataSource, togglePause, setSpeed, stepForward,
-    chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid,
+    placeDayAheadBids, withdrawDayAheadBid,
     placeIntradayOrder, cancelIntradayOrder,
-    submitBlockOrder, cancelBlockOrder, submitHalfHourBids, setBlockOrders,
+    submitHalfHourBids, setBlockOrders,
     subStep, setDeviation, setAssetType, setBmOrder,
-    intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
-    advanceTutorial, skipTutorial, setMode, configureBattery,
-    loadSavedState, reset,
+    playScenario, loadLive, loadSavedState, reset,
   };
 }

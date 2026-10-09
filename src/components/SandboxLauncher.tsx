@@ -141,7 +141,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
               </div>
               {scenarioId === 'live' && <CheckCircle2 size={18} className="launcher-card-check" />}
             </div>
-            <p>Replay the most recent complete GB settlement day (usually yesterday): real imbalance prices and NIV, Market Index Price as DA proxy, and wind, demand and solar forecasts.</p>
+            <p>Trade the second-latest complete GB day from Elexon and bid in the day-ahead auction for the latest one: real imbalance prices and NIV, Market Index Price as DA reference, wind, demand and solar.</p>
           </button>
 
           {HISTORICAL_DAYS.map((day) => {
@@ -179,7 +179,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
           <span className="launcher-step-num">3</span>
           <div className="launcher-step-title">
             <h2>Choose your revenue streams</h2>
-            <p>Pick any combination of the markets you want to trade. Greyed-out streams aren't simulated yet. Analysis is always available for post-trade review.</p>
+            <p>Pick any combination of the markets you want to trade. Greyed-out streams aren't simulated. Forecast and P&L are always available.</p>
           </div>
           <div className="launcher-quick-actions">
             <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select all</button>

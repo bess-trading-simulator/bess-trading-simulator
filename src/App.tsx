@@ -4,20 +4,12 @@ import { useGameState } from './hooks/useGameState';
 import MarketClock, { speedOptions } from './components/MarketClock';
 import DayAheadAuction from './components/DayAheadAuction';
 import IntradayTrading from './components/IntradayTrading';
-import PostTradeAnalysis from './components/PostTradeAnalysis';
 import Glossary from './components/Glossary';
 import RevenueStreams from './components/RevenueStreams';
 import ScenarioSelector from './components/ScenarioSelector';
 import SaveManager from './components/SaveManager';
 import ThemeToggle from './components/ThemeToggle';
-import Tutorial from './components/Tutorial';
-import TrainingLesson from './components/TrainingLesson';
-import type { LessonId } from './components/TrainingLesson';
-import PositionBook from './components/PositionBook';
-import ReplayTimeline from './components/ReplayTimeline';
-import PostTradeExplainer from './components/PostTradeExplainer';
-import EndOfDayReport from './components/EndOfDayReport';
-import ForecastReview from './components/ForecastReview';
+import Academy from './components/Academy';
 import DeskPanels from './components/DeskPanels';
 import ImbalanceTrading from './components/ImbalanceTrading';
 import RenewablesForecast from './components/RenewablesForecast';
@@ -34,18 +26,17 @@ import LiveNews from './components/LiveNews';
 export default function App() {
   const {
     state, dataSource, togglePause, setSpeed, stepForward,
-    chargeBattery, dischargeBattery, placeDayAheadBids, withdrawDayAheadBid, configureBattery,
+    placeDayAheadBids, withdrawDayAheadBid,
     placeIntradayOrder, cancelIntradayOrder, setBlockOrders, submitHalfHourBids,
     subStep, setDeviation, setAssetType, setBmOrder,
-    intradayCharge, intradayDischarge, submitBmOffer, playScenario, loadLive,
-    advanceTutorial, skipTutorial, setMode, loadSavedState, reset,
+    playScenario, loadLive, loadSavedState, reset,
   } = useGameState();
   const [view, setView] = useState<AppView>('imbalance');
   const [appMode, setAppMode] = useState<'start' | 'training' | 'sandbox'>('start');
   const [enabledViews, setEnabledViews] = useState<SandboxView[] | null>(null);
   const [, setSandboxMarket] = useState<SandboxMarket>('GB');
   const [activeScenarioId, setActiveScenarioId] = useState<string>('live');
-  const [lessonId, setLessonId] = useState<LessonId>(1);
+  const [lessonId, setLessonId] = useState<number>(1);
 
   const openSandbox = () => {
     setEnabledViews(null);
@@ -73,14 +64,14 @@ export default function App() {
       const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
       const ordered = VIEW_ORDER.filter((x) => next.includes(x));
       // If the currently open market tab was removed, fall back to a remaining tab.
-      if (view !== 'analysis' && view !== 'forecast' && view !== 'pnl' && !ordered.includes(view as SandboxView)) {
+      if (view !== 'forecast' && view !== 'pnl' && !ordered.includes(view as SandboxView)) {
         setView(ordered[0] ?? 'forecast');
       }
       return ordered;
     });
   };
 
-  const visibleTabs: AppView[] = enabledViews ? [...enabledViews, 'forecast', 'pnl', 'analysis'] : [];
+  const visibleTabs: AppView[] = enabledViews ? [...enabledViews, 'forecast', 'pnl'] : [];
 
 
   if (appMode === 'start') {
@@ -93,29 +84,59 @@ export default function App() {
     return <SandboxLauncher onConfirm={confirmSandbox} onBack={goToStart} />;
   }
 
+  // The market views (with the Desk) — shared by the sandbox and the Academy.
+  const imbalanceView = (
+          <div className="grid-main-full">
+            <ImbalanceTrading
+              state={state}
+              onSetDeviation={setDeviation}
+              onSubStep={subStep}
+              onSetAssetType={setAssetType}
+              onSetBmOrder={setBmOrder}
+            />
+            <DeskPanels state={state} />
+          </div>
+  );
+  const intradayView = (
+          <div className="grid-main-full">
+            <IntradayTrading
+              state={state}
+              onPlaceOrder={placeIntradayOrder}
+              onCancelOrder={cancelIntradayOrder}
+            />
+            <DeskPanels state={state} />
+          </div>
+  );
+  const dayAheadInner = (
+    <>
+            <DayAheadAuction
+              dayAhead={state.dayAhead}
+              nextDay={state.nextDay}
+              ledger={state.ledger}
+              currentTime={state.clock.currentTime}
+              battery={state.battery}
+              onSubmitBids={placeDayAheadBids}
+              onWithdrawBids={withdrawDayAheadBid}
+              onSetBlocks={setBlockOrders}
+              onSubmitHalfHourBids={submitHalfHourBids}
+            />
+            <DeskPanels state={state} />
+    </>
+  );
+
   if (appMode === 'training') {
     return (
-      <TrainingLesson
-        lessonId={lessonId}
+      <Academy
         state={state}
-        dataSource={dataSource}
+        lessonId={lessonId}
         onSelectLesson={setLessonId}
         onOpenSandbox={openSandbox}
+        onSetAssetType={setAssetType}
         onTogglePause={togglePause}
         onSetSpeed={setSpeed}
         onStepForward={stepForward}
         onReset={reset}
-        onCharge={chargeBattery}
-        onDischarge={dischargeBattery}
-        onSubmitBids={placeDayAheadBids}
-        onConfigureBattery={configureBattery}
-        onIntradayCharge={intradayCharge}
-        onIntradayDischarge={intradayDischarge}
-        onPlaceIntradayOrder={placeIntradayOrder}
-        onCancelIntradayOrder={cancelIntradayOrder}
-        onSubmitBmOffer={submitBmOffer}
-        onSetMode={setMode}
-        onPlayScenario={playScenario}
+        renderView={(v) => (v === 'imbalance' ? imbalanceView : v === 'intraday' ? intradayView : <div className="grid-main-full">{dayAheadInner}</div>)}
       />
     );
   }
@@ -201,16 +222,6 @@ export default function App() {
             <button className="btn header-menu-item" onClick={() => { reset(); setActiveScenarioId('live'); }}>
               Reset day
             </button>
-            {visibleTabs.includes('analysis') && (
-              <button
-                className={`btn header-menu-item ${view === 'analysis' ? 'active' : ''}`}
-                onClick={() => setView('analysis')}
-                id="analysis-tab"
-                data-tutorial="analysis-tab"
-              >
-                Analysis{state.analysis && <span className="hdr-tab-grade">{state.analysis.grade}</span>}
-              </button>
-            )}
             <button className="btn header-menu-item" onClick={goToStart}>
               Start
             </button>
@@ -236,45 +247,14 @@ export default function App() {
       <main className="dashboard-bess">
         <ScenarioBanner state={state} />
         {(view === 'imbalance' || view === 'intraday' || view === 'dayahead') && <LiveNews events={state.events} now={state.clock.currentTime} />}
-        {view === 'imbalance' && (
-          <div className="grid-main-full">
-            <ImbalanceTrading
-              state={state}
-              onSetDeviation={setDeviation}
-              onSubStep={subStep}
-              onSetAssetType={setAssetType}
-              onSetBmOrder={setBmOrder}
-            />
-            <DeskPanels state={state} />
-          </div>
-        )}
+        {view === 'imbalance' && imbalanceView}
 
-        {view === 'intraday' && (
-          <div className="grid-main-full">
-            <IntradayTrading
-              state={state}
-              onPlaceOrder={placeIntradayOrder}
-              onCancelOrder={cancelIntradayOrder}
-            />
-            <DeskPanels state={state} />
-          </div>
-        )}
+        {view === 'intraday' && intradayView}
 
         {/* Kept mounted while hidden so unsent order drafts survive tab switches */}
         {visibleTabs.includes('dayahead') && (
           <div className="grid-main-full" style={view === 'dayahead' ? undefined : { display: 'none' }}>
-            <DayAheadAuction
-              dayAhead={state.dayAhead}
-              nextDay={state.nextDay}
-              ledger={state.ledger}
-              currentTime={state.clock.currentTime}
-              battery={state.battery}
-              onSubmitBids={placeDayAheadBids}
-              onWithdrawBids={withdrawDayAheadBid}
-              onSetBlocks={setBlockOrders}
-              onSubmitHalfHourBids={submitHalfHourBids}
-            />
-            <DeskPanels state={state} />
+            {dayAheadInner}
           </div>
         )}
 
@@ -290,27 +270,9 @@ export default function App() {
           </div>
         )}
 
-        {view === 'analysis' && (
-          <div className="grid-main-full">
-            <PostTradeExplainer state={state} />
-            <ForecastReview state={state} />
-            <EndOfDayReport state={state} />
-            <PositionBook state={state} />
-            <ReplayTimeline state={state} />
-            <PostTradeAnalysis
-              dayAhead={state.dayAhead}
-              analysis={state.analysis}
-            />
-          </div>
-        )}
       </main>
 
-      <Tutorial
-        currentStep={state.tutorial.currentStep}
-        isActive={state.tutorial.isActive}
-        onNext={advanceTutorial}
-        onSkip={skipTutorial}
-      />
+
     </div>
   );
 }

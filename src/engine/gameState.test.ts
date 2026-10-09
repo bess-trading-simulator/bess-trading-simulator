@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createGameState, loadMarketDays, loadScenario, submitDayAheadBids, stepForwardAction,
-  chargeBatteryAction, dischargeBatteryAction, placeIntradayOrderAction, intradayChargeAction, submitBmOfferAction,
+  chargeBatteryAction, dischargeBatteryAction, placeIntradayOrderAction,
   submitBlockOrderAction, submitHalfHourBidsAction, setBlockOrdersAction,
   subStepAction, setDeviationAction, setAssetTypeAction, setBmOrderAction,
 } from './gameState';
@@ -153,7 +153,7 @@ describe('intraday continuous order book', () => {
   it('market buy walks the asks and pays at least the best ask', () => {
     const s = at(fresh(), 6, 0);
     const book = buildBook(s, D0, 30)!;
-    const r = intradayChargeAction(s, 30, 40);
+    const r = placeIntradayOrderAction(s, { deliveryDay: D0, period: 30, side: OrderSide.BUY, type: 'market', qtyMw: 40 });
     const fills = r.intraday.fills;
     expect(fills.length).toBeGreaterThan(0);
     expect(Math.min(...fills.map(f => f.price))).toBeGreaterThanOrEqual(book.asks[0].price);
@@ -406,12 +406,6 @@ describe('imbalance deviations re-dispatch the NET position', () => {
   it('ignores non-finite deviations', () => {
     const s = step(fresh(), 4);
     expect(dischargeBatteryAction(s, NaN)).toBe(s);
-  });
-
-  it('rejects BM offers for the running or past SP', () => {
-    const s = step(fresh(), 10);
-    const r = submitBmOfferAction(s, { period: 10, direction: 'offer', mw: 20, price: 1 });
-    expect(r).toBe(s);
   });
 });
 

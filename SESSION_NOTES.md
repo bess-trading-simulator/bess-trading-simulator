@@ -623,3 +623,11 @@ RevenueAttribution, leaky ModelComparison, stale roadmap/exam/frequency texts).
 - Forecast and Analysis views no longer show the panels.
 - The Academy (TrainingLesson) still uses SupportPanels and its legacy components — open item.
 Tests: 79.
+
+## S4.17 — Academy rebuilt, legacy removed (2026-10-09)
+- Academy (`components/Academy.tsx`, `data/academy.ts`): 5 lessons (settlement basics, DA auction, intraday, imbalance/NIV, BM) on the REAL sandbox views + Desk; steps are checked from ledger/auction results/fills/BOAs; completion stored in localStorage. Lesson 5 switches the asset to BM unit, the others to non-BM.
+- Removed: old TrainingLesson + ~60 legacy components/engine modules (SupportPanels, cockpit, coach, scoring/gradebook/exam, Analysis view incl. generateFullAnalysis, priceGenerator, random news `events.ts`, `modes.ts` with fake availability payments, Triad alert, legacy BM offers that leaked actual NIV, tutorial).
+- Engine: BM units can't deviate (guard in applyDeviation/setDeviationSetpoint); simulated days seeded per day; trade/price history bounded.
+- Elexon date picker loads the full real day (real forecasts) instead of NIV-derived ones.
+- Live start: storage-safe Elexon cache/saves; on API failure a fresh synthetic session starts instead of an old state.
+- Texts: revenue streams (BM now selectable via Imbalance tab; Triad/stacking removed), Start, About, Launcher, Glossary, README, Forecast note.
