@@ -1,24 +1,5 @@
 // GB electricity market specific types and mechanics
 
-export interface SettlementPeriod {
-  period: number;
-  startTime: number;
-  daPrice: number | null;
-  idPrice: number | null;
-  sipPrice: number | null;
-  niv: number | null;
-  bov: number | null;
-  sov: number | null;
-}
-
-export interface DayView {
-  date: number;
-  periods: SettlementPeriod[];
-  triadRisk: 'low' | 'medium' | 'high';
-  windForecastPct: number;
-  demandForecastGw: number;
-}
-
 export interface TradePosition {
   period: number;
   /** UTC midnight ms of the delivery day for this position */
@@ -29,38 +10,6 @@ export interface TradePosition {
   price: number;
   lockedAt: number;
   delivered?: boolean;
-}
-
-export interface OutturnComparison {
-  period: number;
-  spLabel: string;
-  daPrice: number;
-  sipPrice: number;
-  nivValue: number;
-  playerAction: 'charge' | 'discharge' | 'idle';
-  playerPrice: number;
-  playerMw: number;
-  playerMarket: string;
-  optimalAction: 'charge' | 'discharge' | 'idle';
-  optimalReason: string;
-  playerRevenue: number;
-  optimalRevenue: number;
-  missedRevenue: number;
-  explanation: string;
-  verdict: 'good' | 'ok' | 'bad' | 'missed' | 'neutral';
-}
-
-export interface AnalysisSummary {
-  totalPlayerRevenue: number;
-  totalOptimalRevenue: number;
-  totalMissedRevenue: number;
-  score: number; // 0-100
-  grade: string;
-  overallVerdict: string;
-  bestTrade: OutturnComparison | null;
-  worstTrade: OutturnComparison | null;
-  strategyAdvice: string[];
-  periods: OutturnComparison[];
 }
 
 // Generate realistic GB day-ahead prices for a given day
@@ -125,8 +74,14 @@ export function nivForecastError(sp: number, dayIdx: number): number {
  */
 export function nivEstimate(actualNiv: number, sp: number, dayIdx: number, subIdx: number): { niv: number; band: number } {
   const remaining = Math.max(0, 1 - subIdx / 6);
+  // Each 5-min reading carries its own fresh noise on top of a shrinking share of
+  // the forecast error, so successive readings can't be combined to back out the
+  // actual NIV — they only get closer to it.
+  const base = nivForecastError(sp, dayIdx);
+  const fresh = subIdx === 0 ? 0 : nivForecastError(sp + 97 * subIdx, dayIdx + 31 * subIdx);
+  const err = subIdx === 0 ? base : 0.6 * base + 0.4 * fresh;
   return {
-    niv: Math.round(actualNiv + nivForecastError(sp, dayIdx) * remaining),
+    niv: Math.round(actualNiv + err * remaining),
     band: Math.round(NIV_FORECAST_BAND * remaining),
   };
 }

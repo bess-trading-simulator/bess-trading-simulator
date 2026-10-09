@@ -153,23 +153,6 @@ export function dischargeBattery(
   return { newState, entry };
 }
 
-export function getRevenueSummary(state: BatteryState) {
-  const netProfit = state.totalDischargeRevenue - state.totalChargeCost;
-  const cycles = state.totalCycles;
-  return {
-    totalRevenue: Math.round(state.totalDischargeRevenue * 100) / 100,
-    totalCost: Math.round(state.totalChargeCost * 100) / 100,
-    netProfit: Math.round(netProfit * 100) / 100,
-    revenuePerCycle: cycles > 0.01 ? Math.round((netProfit / cycles) * 100) / 100 : 0,
-    avgChargePrice: state.totalChargedMwh > 0.01
-      ? Math.round((state.totalChargeCost / state.totalChargedMwh) * 100) / 100
-      : 0,
-    avgDischargePrice: state.totalDischargedMwh > 0.01
-      ? Math.round((state.totalDischargeRevenue / state.totalDischargedMwh) * 100) / 100
-      : 0,
-    totalCycles: Math.round(cycles * 100) / 100,
-  };
-}
 
 /**
  * Physical dispatch only (no cash): signed MW for one SP, + = discharge,

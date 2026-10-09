@@ -1,3 +1,5 @@
+import { dayPnl } from '../engine/pnl';
+import { assetSwitchBlocked, visibleBoas } from '../engine/gameState';
 import { useState } from 'react';
 import type { GameState } from '../engine/types';
 import { getSettlementPeriod, getUtcDayStart, formatDeliveryDay, subStepIndex } from '../engine/clock';
@@ -84,7 +86,7 @@ function NivHeatmap({ niv, currentSp, revealedPeriods, tradeBySp }: {
 
 export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onSetAssetType, onSetBmOrder }: Props) {
   const assetType = state.assetType ?? 'non-bm';
-  const { dayAhead, currentPrice, clock } = state;
+  const { dayAhead, clock } = state;
   // 0-indexed current SP for array access (getSettlementPeriod returns 1-48).
   const currentSp = getSettlementPeriod(clock.currentTime) - 1;
   const todayDay = getUtcDayStart(clock.currentTime);
@@ -120,7 +122,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
   const liveEst = nivEstimate(nivActual, currentSp, dayIdx, subStepIndex(clock.currentTime));
   const niv = currentSpRevealed ? nivActual : liveEst.niv;
   const nivBand = currentSpRevealed ? 0 : liveEst.band;
-  const daHere = dayAhead.forecastPrices[currentSp] ?? currentPrice?.price ?? 0;
+  const daHere = dayAhead.forecastPrices[currentSp] ?? 0;
   // EXPECTED price from the NIV forecast via the simplified model. On real days
   // the settle is Elexon's actual SIP, so the gap can be large — as in reality.
   const liveSettlePrice = imbalanceSettlementPrice(daHere, niv);
@@ -168,15 +170,15 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
   const startSp = Math.max(0, currentSp - HISTORY_LOOKBACK + 1);
   const endSp = Math.min(48, currentSp + 1);
   const playerActionsBySp: Record<number, { chargeMw: number; dischargeMw: number; avgPrice: number }> = {};
-  for (const t of state.trades) {
-    const sp = Math.floor(new Date(t.timestamp).getUTCHours() * 2 + (new Date(t.timestamp).getUTCMinutes() >= 30 ? 1 : 0));
-    const tDay = getUtcDayStart(t.timestamp);
-    if (tDay !== todayDay) continue;
-    const slot = playerActionsBySp[sp] ?? { chargeMw: 0, dischargeMw: 0, avgPrice: 0 };
-    if (t.side === 'buy') slot.chargeMw += t.volumeMw;
-    else slot.dischargeMw += t.volumeMw;
-    slot.avgPrice = t.price;
-    playerActionsBySp[sp] = slot;
+  // Markers = your deliberate imbalance deviations (not DA/ID deliveries), at the SIP once settled.
+  for (const e of state.ledger) {
+    if (e.deliveryDay !== todayDay || Math.abs(e.deviationMw) < 0.5) continue;
+    const sp = e.period;
+    playerActionsBySp[sp] = {
+      chargeMw: e.deviationMw < 0 ? -e.deviationMw : 0,
+      dischargeMw: e.deviationMw > 0 ? e.deviationMw : 0,
+      avgPrice: dayAhead.sipOutturn[sp] ?? 0,
+    };
   }
 
   const chartData = [];
@@ -184,7 +186,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
     const isRevealed = sp < dayAhead.revealedPeriods;
     const sip = isRevealed ? dayAhead.sipOutturn[sp] : null;
     const action = playerActionsBySp[sp];
-    const markerY = action ? action.avgPrice : sip ?? 0;
+    const markerY = sip ?? null; // only placed once the SIP is published
     chartData.push({
       sp: `${String(Math.floor(sp / 2)).padStart(2, '0')}:${sp % 2 === 0 ? '00' : '30'}`,
       spIdx: sp,
@@ -233,7 +235,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
       const mw = Math.abs(e.deviationMw);
       const energyMwh = mw * 0.5;
       const daAt = dayAhead.forecastPrices[sp] ?? sip;
-      const forecastSip = imbalanceSettlementPrice(daAt, nivAct + nivForecastError(sp, dayIdx));
+      const forecastSip = e.expectedSip ?? imbalanceSettlementPrice(daAt, nivAct + nivForecastError(sp, dayIdx));
       const settledPnL = (direction === 'discharge' ? 1 : -1) * sip * energyMwh;
       // Hit = helped the system: charge into a long system (NIV < 0), discharge into a short one (NIV > 0).
       const isHit = (nivAct < 0 && direction === 'charge') || (nivAct > 0 && direction === 'discharge');
@@ -265,12 +267,10 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
     : null;
 
   // BM and total P&L for today (delivered SPs), from the BOAs and the settlement ledger.
-  const bmToday = (state.bmAcceptances ?? []).filter((a) => a.day === todayDay && a.sp <= currentSp && a.status !== 'skipped');
+  const bmToday = visibleBoas(state).filter((a) => a.day === todayDay && a.sp <= currentSp && a.status !== 'skipped');
   const bmCashToday = bmToday.reduce((s2, a) => s2 + (a.kind === 'offer' ? 1 : -1) * a.mw * 0.5 * a.price, 0);
   const bmCountToday = bmToday.length;
-  const totalToday = state.ledger
-    .filter((e) => e.deliveryDay === todayDay)
-    .reduce((s2, e) => s2 + e.contractCash + e.imbalanceCash, 0);
+  const totalToday = dayPnl(state, todayDay).net; // same number as the P&L tab
 
   // NIV trend: last 12 SETTLED SPs (the running SP's NIV isn't known yet).
   const nivWindowEnd = Math.min(currentSp, dayAhead.revealedPeriods);
@@ -284,11 +284,11 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
     ? nivSeries.reduce((a, b) => a + b, 0) / nivSeries.length
     : 0;
 
-  type DotProps = { cx?: number; cy?: number; payload?: { chargeMw: number; dischargeMw: number; spIdx: number } };
+  type DotProps = { cx?: number; cy?: number; index?: number; payload?: { chargeMw: number; dischargeMw: number; spIdx: number } };
   const renderChargeDot = (props: DotProps) => {
     const { cx, cy, payload } = props;
     if (!payload || !payload.chargeMw || cx == null || cy == null) {
-      return <g key={`c-empty-${payload?.spIdx ?? Math.random()}`} />;
+      return <g key={`c-empty-${payload?.spIdx ?? props.index ?? 0}`} />;
     }
     const r = Math.max(3, Math.min(6, 2 + payload.chargeMw / 12));
     return (
@@ -301,7 +301,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
   const renderDischargeDot = (props: DotProps) => {
     const { cx, cy, payload } = props;
     if (!payload || !payload.dischargeMw || cx == null || cy == null) {
-      return <g key={`d-empty-${payload?.spIdx ?? Math.random()}`} />;
+      return <g key={`d-empty-${payload?.spIdx ?? props.index ?? 0}`} />;
     }
     const r = Math.max(3, Math.min(6, 2 + payload.dischargeMw / 12));
     return (
@@ -336,7 +336,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
         {showIntro && (
           <div className="im-intro">
             <div className="im-intro-body">
-              <strong>NIV chasing:</strong> predict whether the grid will be <span style={{ color: 'var(--accent)' }}>long</span> (oversupplied) or <span style={{ color: 'var(--magenta)' }}>short</span>, then position <em>against</em> it — charge into a long system (cheap, sometimes paid), discharge into a short system (high SIP). Watch the <strong>NIV</strong> card (Elexon sign: <strong>+ = short</strong>, − = long) and the pattern heatmap. You commit before the SP and settle at the SIP published after it — on real days that's Elexon's actual SIP.
+              <strong>NIV chasing:</strong> predict whether the grid will be <span style={{ color: 'var(--accent)' }}>long</span> (oversupplied) or <span style={{ color: 'var(--magenta)' }}>short</span>, then trade in the direction that <em>reduces</em> the imbalance — charge into a long system (cheap, sometimes paid), discharge into a short system (high SIP). Watch the <strong>NIV</strong> card (Elexon sign: <strong>+ = short</strong>, − = long) and the pattern heatmap. You steer during the SP in 5-minute steps and settle at the SIP published after it — on real days that's Elexon's actual SIP.
             </div>
             <button className="im-intro-dismiss" onClick={dismissIntro} aria-label="Dismiss">×</button>
           </div>
@@ -358,7 +358,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
             <span className="im-perf-sub">{bmCountToday} BOA{bmCountToday === 1 ? '' : 's'}</span>
           </span>
           <span className="im-perf-sep" />
-          <span className="im-perf-item" title="Everything settled today so far: day-ahead + intraday + BM contracts + imbalance, for delivered SPs.">
+          <span className="im-perf-item" title="Net P&L today so far, same as the P&L tab: day-ahead + intraday + BM contracts + imbalance − fees − degradation.">
             <span className="im-perf-label">Total today</span>
             <strong className={totalToday >= 0 ? 'positive' : 'negative'}>{totalToday >= 0 ? '+' : '−'}£{Math.abs(totalToday).toFixed(0)}</strong>
             <span className="im-perf-sub">all markets</span>
@@ -554,9 +554,11 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
               <span className="im-asset-label">Asset</span>
               <span className="im-asset-toggle" role="tablist" aria-label="Asset registration">
                 <button className={`hdr-tab ${assetType === 'non-bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('non-bm')}
-                  title="Non-BM asset (e.g. embedded, via a supplier/aggregator): no binding FPN — you can deliberately run long/short (NIV chasing).">Non-BM</button>
+                  disabled={!!assetSwitchBlocked(state, 'non-bm')}
+                  title={assetSwitchBlocked(state, 'non-bm') ?? 'Non-BM asset (e.g. embedded, via a supplier/aggregator): no binding FPN — you can deliberately run long/short (NIV chasing).'}>Non-BM</button>
                 <button className={`hdr-tab ${assetType === 'bm' ? 'active' : ''}`} onClick={() => onSetAssetType?.('bm')}
-                  title="Balancing Mechanism unit: your FPN is binding — no deliberate deviation; offer flexibility to NESO via bids/offers instead.">BM unit</button>
+                  disabled={!!assetSwitchBlocked(state, 'bm')}
+                  title={assetSwitchBlocked(state, 'bm') ?? 'Balancing Mechanism unit: your FPN is binding — no deliberate deviation; offer flexibility to NESO via bids/offers instead.'}>BM unit</button>
               </span>
               <button
                 className={`im-blind-toggle ${hideSip ? 'on' : ''}`}

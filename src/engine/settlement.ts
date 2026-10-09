@@ -151,6 +151,7 @@ export function applyDeviation(state: GameState, day: number, sp: number, signed
     deviationMw: round2(prev.deviationMw + change),
     meteredMw: round2(actualMw),
     deviationProfile: undefined,
+    expectedSip: logPrice,
   };
   return { ...state, battery: newState, ledger: upsert(state.ledger, entry) };
 }
@@ -203,6 +204,7 @@ export function setDeviationSetpoint(state: GameState, day: number, sp: number, 
     deviationProfile: profile,
     deviationMw: round2(actualMw - prev.deliveredMw),
     meteredMw: round2(actualMw),
+    expectedSip: logPrice,
   };
   return { ...state, battery: newState, ledger: upsert(state.ledger, entry) };
 }

@@ -13,7 +13,7 @@ export interface SaveSlot {
   name: string;
   date: string; // scenario date or sim date
   savedAt: number; // epoch ms
-  mode: string;
+  mode?: string; // legacy saves
   netProfit: number;
   totalCycles: number;
   dataSource: string;
@@ -52,15 +52,13 @@ export function saveGame(state: GameState, name: string, dataSource: string): st
     name,
     date: new Date(state.clock.currentTime).toISOString().split('T')[0],
     savedAt: Date.now(),
-    mode: state.mode,
     netProfit: Math.round(revenue * 100) / 100,
     totalCycles: Math.round(state.battery.totalCycles * 100) / 100,
     dataSource,
   };
 
   // Strip internal state before saving
-  const toSave: GameState & { _priceGenState?: unknown } = { ...state };
-  delete toSave._priceGenState;
+  const toSave = state;
 
   try {
     localStorage.setItem(SAVE_PREFIX + id, JSON.stringify(toSave));
@@ -100,8 +98,7 @@ export function deleteSave(id: string) {
 
 export function autoSave(state: GameState) {
   try {
-    const toSave: GameState & { _priceGenState?: unknown } = { ...state };
-    delete toSave._priceGenState;
+    const toSave = state;
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(toSave));
   } catch {
     // localStorage full — silently fail
@@ -157,16 +154,3 @@ export function getCachedDay(date: string) {
   return cache[date] ?? null;
 }
 
-// Check if we need to refresh (latest cached day is older than D-2)
-export function needsRefresh(): boolean {
-  const cache = getCachedElexonData();
-  const dates = Object.keys(cache).sort();
-  if (dates.length === 0) return true;
-
-  const latest = dates[dates.length - 1];
-  const latestDate = new Date(latest + 'T00:00:00Z');
-  const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - 3); // refresh if latest is older than D-3
-
-  return latestDate < cutoff;
-}

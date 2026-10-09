@@ -45,7 +45,7 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
   const { dayAhead, battery, intraday, clock, nextDay } = state;
   const now = clock.currentTime;
   const today = getUtcDayStart(now);
-  const tomorrowOpen = !dayAhead.isAuctionOpen && nextDay.day !== today;
+  const tomorrowOpen = !dayAhead.isAuctionOpen && !dayAhead.hhAuctionOpen && nextDay.day !== today;
   const [dayChoice, setDayChoice] = useState<'today' | 'tomorrow'>('today');
   const day = dayChoice === 'tomorrow' && tomorrowOpen ? nextDay.day : today;
   const [selected, setSelected] = useState<number | null>(null);
@@ -137,7 +137,7 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3><Clock size={16} /> Intraday · continuous order book</h3>
-          <HelpIcon text="Continuous trading per half-hour product, like EPEX/Nord Pool GB intraday. Every product has its own order book (bids = buyers, asks = sellers). Crossing the spread fills immediately but costs you the spread; resting limit orders may fill later at your price — or not at all. Each product closes 1 hour before delivery (BM Gate Closure, T-60). Tomorrow's products open once the DA auction has cleared." />
+          <HelpIcon text="Continuous trading per half-hour product, like EPEX/Nord Pool GB intraday. Every product has its own order book (bids = buyers, asks = sellers). Crossing the spread fills immediately but costs you the spread; resting limit orders may fill later at your price — or not at all. Each product closes 1 hour before delivery (BM Gate Closure, T-60). Tomorrow's products open once both day-ahead auctions have cleared (after 15:30)." />
           <div className="idb-day-toggle">
             <button className={`hdr-tab ${day === today ? 'active' : ''}`} onClick={() => { setDayChoice('today'); setSelected(null); }}>
               Today · {formatDeliveryDay(today)}
@@ -145,7 +145,7 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
             <button
               className={`hdr-tab ${day !== today ? 'active' : ''}`}
               disabled={!tomorrowOpen}
-              title={tomorrowOpen ? '' : 'Opens after the DA auction clears (09:20 UK)'}
+              title={tomorrowOpen ? '' : 'Opens after the day-ahead auctions (15:30 UK)'}
               onClick={() => { setDayChoice('tomorrow'); setSelected(null); }}
             >
               Tomorrow · {formatDeliveryDay(nextDay.day)}

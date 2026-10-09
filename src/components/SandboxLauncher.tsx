@@ -7,7 +7,7 @@ import type { HistoricalDay } from '../data/historicalDays';
 import { STRATEGIES } from '../data/strategies';
 
 export type SandboxMarket = 'GB';
-export type SandboxView = Exclude<AppView, 'analysis' | 'forecast' | 'pnl'>;
+export type SandboxView = Exclude<AppView, 'forecast' | 'pnl'>;
 
 interface Props {
   onConfirm: (views: SandboxView[], market: SandboxMarket, scenario: HistoricalDay | null) => void;
@@ -189,9 +189,9 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
 
         <div className="launcher-grid">
           {STRATEGIES.map((s) => {
-            const Icon = s.view ? viewIcons[s.view] : Lock;
+            const Icon = (s.view ?? s.includedIn) ? viewIcons[(s.view ?? s.includedIn)!] : Lock;
             const selectable = !!s.view && !s.comingSoon;
-            const isSelected = selectable && selected.has(s.view!);
+            const isSelected = s.includedIn ? selected.has(s.includedIn) : selectable && selected.has(s.view!);
             return (
               <button
                 key={s.mode}
@@ -208,6 +208,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
                   </div>
                   {s.comingSoon
                     ? <span className="strategy-soon-tag"><Lock size={11} /> Coming soon</span>
+                    : s.includedIn && !isSelected ? <span className="strategy-soon-tag">with Imbalance</span>
                     : isSelected && <CheckCircle2 size={18} className="launcher-card-check" />}
                 </div>
                 <p>{s.description}</p>
@@ -221,7 +222,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
         <span className="launcher-summary">
           {selected.size === 0
             ? 'Select at least one market to continue.'
-            : `${selected.size} market${selected.size === 1 ? '' : 's'} selected · ${scenarioId === 'live' ? 'Live data' : 'Scenario'} · Analysis included`}
+            : `${selected.size} market${selected.size === 1 ? '' : 's'} selected · ${scenarioId === 'live' ? 'Live data' : 'Scenario'} · Forecast + P&L included`}
         </span>
         <button
           className="btn btn-submit btn-buy"

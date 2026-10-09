@@ -190,10 +190,12 @@ describe('intraday continuous order book', () => {
     expect(closed.intraday.orders.at(-1)!.status).toBe('rejected');
   });
 
-  it("tomorrow's products open only after the DA auction cleared", () => {
+  it("tomorrow's products open only after both DA auctions cleared (15:30)", () => {
     let s = fresh();
     expect(isProductOpen(s, D0 + DAY, 20)).toBe(false);
-    s = step(s, 19);
+    s = step(s, 19); // 09:30: hourly cleared, 30-min auction still open
+    expect(isProductOpen(s, D0 + DAY, 20)).toBe(false);
+    s = step(s, 13); // 16:00
     expect(isProductOpen(s, D0 + DAY, 20)).toBe(true);
   });
 });

@@ -68,7 +68,9 @@ export function productRef(state: GameState, day: number, sp: number): { da: num
     return { da: state.dayAhead.forecastPrices[sp] ?? 0, sip: state.dayAhead.sipOutturn[sp] ?? 0, shock: shockState(state.dayAhead.todayNews, day, sp, now) };
   }
   if (day === state.nextDay.day) {
-    if (state.dayAhead.isAuctionOpen) return null; // D+1 products open once the DA auction cleared
+    // D+1 products open once both day-ahead auctions have cleared (after 15:30) —
+    // before that the half-hourly clearing price would leak through the book.
+    if (state.dayAhead.isAuctionOpen || state.dayAhead.hhAuctionOpen) return null;
     return { da: state.nextDay.daClearing[sp] ?? 0, sip: state.nextDay.sipOutturn[sp] ?? 0, shock: shockState(state.nextDay.liveNews, day, sp, now) };
   }
   return null;

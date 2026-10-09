@@ -9,7 +9,7 @@ const time = (t: number) => {
 /** News that broke during today's delivery (e.g. an interconnector trip). */
 export default function LiveNews({ events, now }: { events: MarketEvent[]; now: number }) {
   const today = getUtcDayStart(now);
-  const live = events.filter(e => e.id.startsWith('live-') && getUtcDayStart(e.timestamp) === today).slice(0, 3);
+  const live = events.filter(e => e.id.startsWith('live-') && e.timestamp <= now && getUtcDayStart(e.timestamp) === today).slice(0, 3);
   if (live.length === 0) return null;
   return (
     <div className="live-news">

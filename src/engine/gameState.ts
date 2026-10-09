@@ -1,8 +1,8 @@
-import type { GameState, DayAheadBid, DayAheadState, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
-import { OrderSide, GameMode } from './types';
-import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart, SUB_STEP_MS, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
+import type { GameState, DayAheadBid, DayAheadState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
+import { OrderSide } from './types';
+import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart, SUB_STEP_MS, subStepIndex, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
 import { createBattery } from './battery';
-import { imbalanceSettlementPrice, nivForecastError, mulberry32 } from './ukMarket';
+import { imbalanceSettlementPrice, nivEstimate, mulberry32 } from './ukMarket';
 import type { TradePosition } from './ukMarket';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
@@ -10,11 +10,6 @@ import { deliverPeriod, settlePeriod, applyDeviation, setDeviationSetpoint, sign
 import { dayPnl } from './pnl';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
-
-/** Price shown as "current price": today's DA price of the running SP (the SIP is only known afterwards). */
-function pricePoint(timestamp: number, price: number) {
-  return { timestamp, price, demandMw: 0, renewablePct: 0, basePrice: price, eventImpact: 0 };
-}
 
 /** Deterministic seed per delivery day for simulated market days. */
 function daySeed(day: number): number {
@@ -64,30 +59,19 @@ function dayAheadForDay(
 }
 
 
-function createBmState(): BmState {
-  return { offers: [], accepted: [] };
-}
 
 export function createGameState(): GameState {
   const clock = createClock();
   const day = getUtcDayStart(clock.currentTime);
   const today = syntheticMarketDay(day, daySeed(day));
   const next = nextDayFrom(today, daySeed(day) + 1);
-  const initialPrice = pricePoint(clock.currentTime, today.daClearing[0] ?? 0);
 
   const state: GameState = {
     clock: { ...clock, speed: 'slow' },
-    priceHistory: [initialPrice],
-    currentPrice: initialPrice,
     battery: createBattery(),
     trades: [],
     events: [],
-    mode: GameMode.ARBITRAGE,
-    tutorial: { currentStep: 0, isActive: false, completed: true },
     dayAhead: dayAheadForDay(today, next, clock.currentTime, []),
-    bm: createBmState(),
-    analysis: null,
-    triadAlert: false,
     nextDay: next,
     intraday: createIntradayState(),
     ledger: [],
@@ -103,27 +87,13 @@ export function createGameState(): GameState {
 export function loadMarketDays(state: GameState, today: MarketDay, nextIn: MarketDay): GameState {
   const next = nextIn.signals ? nextIn : withDeskForecast(nextIn, Math.floor(nextIn.day / DAY_MS));
   const clock = createClock(new Date(today.day));
-  const firstSip = today.sipOutturn[0] ?? 0;
-  const initialPrice = {
-    timestamp: clock.currentTime,
-    // The cockpit price before the first tick: today's DA price (the SIP of SP1 isn't known yet).
-    price: today.daClearing[0] ?? firstSip,
-    demandMw: 30000,
-    renewablePct: 0.25,
-    basePrice: today.daClearing[0] ?? firstSip,
-    eventImpact: 0,
-  };
+
   return ensureMids({
     ...state,
     clock: { ...clock, speed: 'slow' },
-    priceHistory: [initialPrice],
-    currentPrice: initialPrice,
     battery: createBattery(state.battery.config),
     trades: [],
     events: [],
-    bm: createBmState(),
-    analysis: null,
-    triadAlert: false,
     dayAhead: dayAheadForDay(today, next, clock.currentTime, []),
     nextDay: next,
     intraday: createIntradayState(),
@@ -182,7 +152,6 @@ export function tickGameState(state: GameState): GameState {
         todayHhResults: cleared ? s.dayAhead.hhResults : undefined,
       },
       nextDay: next,
-      bm: createBmState(),
       ledger: s.ledger.filter(e => e.deliveryDay >= currentDayStart - DAY_MS),
       bmBook: (s.bmBook ?? []).filter(b => b.day >= currentDayStart),
       bmAcceptances: (s.bmAcceptances ?? []).filter(a => a.day >= currentDayStart - DAY_MS),
@@ -248,18 +217,11 @@ export function tickGameState(state: GameState): GameState {
       category: n.category,
     }));
 
-  const daNow = s.dayAhead.forecastPrices[currentSp];
-  const newPrice = pricePoint(now, Number.isFinite(daNow) ? daNow : (gs.currentPrice?.price ?? 0));
-
   return {
     ...s,
     // Bounded histories so the autosave stays small.
     trades: s.trades.slice(-600),
-    priceHistory: [...gs.priceHistory, newPrice].slice(-96),
-    currentPrice: newPrice,
     events: [...breaking, ...s.events].slice(0, 50),
-    analysis: null,
-    triadAlert: false,
   };
 }
 
@@ -273,13 +235,15 @@ export function stepForwardAction(state: GameState): GameState {
 }
 
 /**
- * EXPECTED SIP of the running SP (model on the NIV forecast) — for the cycle-log
- * display only. The actual SIP is unknown until the SP ends.
+ * EXPECTED SIP of the running SP as shown to the player (live NIV estimate of
+ * the current 5-min interval). The actual SIP is unknown until the SP ends.
  */
 function runningSpSip(state: GameState): number {
-  const sp = getSettlementPeriod(state.clock.currentTime) - 1;
-  const dayIdx = Math.floor(getUtcDayStart(state.clock.currentTime) / DAY_MS);
-  return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, (state.dayAhead.niv[sp] ?? 0) + nivForecastError(sp, dayIdx));
+  const now = state.clock.currentTime;
+  const sp = getSettlementPeriod(now) - 1;
+  const dayIdx = Math.floor(getUtcDayStart(now) / DAY_MS);
+  const est = nivEstimate(state.dayAhead.niv[sp] ?? 0, sp, dayIdx, subStepIndex(now));
+  return imbalanceSettlementPrice(state.dayAhead.forecastPrices[sp] ?? 0, est.niv);
 }
 
 // ===== Intra-SP control (non-BM assets) =====
@@ -304,8 +268,45 @@ export function setDeviationAction(state: GameState, setpointMw: number): GameSt
 
 // ===== Balancing Mechanism (BM units) =====
 
+/**
+ * Why the asset registration can't change right now (null = it can). The running
+ * SP must be "clean": a BM unit that had an offer/bid in it already knows whether
+ * NESO called it (which reveals the system direction), and a non-BM unit that
+ * already deviated can't turn that into an FPN-following BM unit.
+ */
+export function assetSwitchBlocked(state: GameState, to: AssetType): string | null {
+  if ((state.assetType ?? 'non-bm') === to) return null;
+  const day = getUtcDayStart(state.clock.currentTime);
+  const sp = getSettlementPeriod(state.clock.currentTime) - 1;
+  if (to === 'non-bm') {
+    const hadBm = (state.bmBook ?? []).some(o => o.day === day && o.sp === sp && (o.offerMw > 0 || o.bidMw > 0))
+      || (state.bmAcceptances ?? []).some(a => a.day === day && a.sp === sp);
+    if (hadBm) return 'You had a BM offer/bid in the running SP — switch from the next SP.';
+  } else {
+    const e = state.ledger.find(x => x.deliveryDay === day && x.period === sp);
+    if (e && Math.abs(e.deviationMw) > 0.01) return 'You already deviated in the running SP — switch from the next SP.';
+  }
+  return null;
+}
+
 export function setAssetTypeAction(state: GameState, assetType: AssetType): GameState {
+  if (assetSwitchBlocked(state, assetType)) return state;
   return { ...state, assetType };
+}
+
+/**
+ * BOAs as the unit sees them now: an instruction only once it has arrived
+ * (start of its 5-min interval); a skip only after the SP — during the SP a
+ * real unit just sees that no instruction came.
+ */
+export function visibleBoas(state: GameState): BmAcceptance[] {
+  const now = state.clock.currentTime;
+  return (state.bmAcceptances ?? []).filter(a => {
+    const spStart = a.day + a.sp * HALF_HOUR_MS;
+    return a.status === 'skipped'
+      ? now >= spStart + HALF_HOUR_MS
+      : now >= spStart + (a.startSubIdx ?? 0) * SUB_STEP_MS;
+  });
 }
 
 /** Set / replace your standing BM bid-offer pair for one SP (until gate closure T-60). */
@@ -382,7 +383,7 @@ function acceptBmOrders(state: GameState, day: number, sp: number, now: number):
   const hhmm = `${String(startClock.getUTCHours()).padStart(2, '0')}:${String(startClock.getUTCMinutes()).padStart(2, '0')}`;
   const event: MarketEvent = {
     id: `live-boa-${day}-${sp}`,
-    timestamp: now,
+    timestamp: startClock.getTime(), // published when the instruction arrives
     headline: kind === 'offer'
       ? `NESO BOA from ${hhmm}: discharge +${instructedMw} MW at your offer £${price.toFixed(2)}`
       : `NESO BOA from ${hhmm}: charge ${instructedMw} MW at your bid £${price.toFixed(2)}`,
@@ -457,10 +458,10 @@ export function submitBlockOrderAction(state: GameState, input: Omit<DaBlockOrde
   const prefix = input.auction === 'hourly' ? 'BH' : 'BQ';
   const used = existing.map(b => Number(b.id.replace(prefix, ''))).filter(Number.isFinite);
   const id = `${prefix}${Math.max(0, ...used) + 1}`;
-  return { ...state, dayAhead: { ...state.dayAhead, blocks: [...existing, { ...input, id }] } };
+  // Same checks as the UI path (power limit against the hourly/30-min orders too).
+  const same = existing.filter(b => b.auction === input.auction);
+  return setBlockOrdersAction(state, input.auction, [...same, { ...input, id }]);
 }
-
-/** Cancel a block (and its linked children) while its auction is open. */
 
 /** Net DA position per SP already held for the auction's delivery day (+ = sell). */
 function deliveryDayNet(state: GameState): number[] {

@@ -263,7 +263,7 @@ function AuctionView({ dayAhead, nextDay, currentTime, battery, onSubmitBids, on
     // Size to the energy actually available: fill from the projected start SoC
     // up to full, then sell everything stored.
     const buyMwh = Math.max(0, (capacity - startSoc) / eff);
-    const buyMw = Math.min(P, Math.round(buyMwh / k));
+    const buyMw = Math.min(P, Math.floor(buyMwh / k + 1e-9)); // never buy more than fits
     const sellMw = Math.min(P, Math.floor((startSoc + buyMw * k * eff) / k));
     const next: Record<number, Draft> = {};
     for (let i = 0; i < k; i++) {

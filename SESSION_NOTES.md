@@ -631,3 +631,18 @@ Tests: 79.
 - Elexon date picker loads the full real day (real forecasts) instead of NIV-derived ones.
 - Live start: storage-safe Elexon cache/saves; on API failure a fresh synthetic session starts instead of an old state.
 - Texts: revenue streams (BM now selectable via Imbalance tab; Triad/stacking removed), Start, About, Launcher, Glossary, README, Forecast note.
+
+## S4.18 — Full audit + fixes (2026-10-09)
+Engine audit: 300 randomised multi-day sessions (synthetic + scenarios, ~34k ID fills, 407 BOAs) — settlement, cash, SoC, power limits, gates and P&L archive all consistent.
+Fixed:
+- Leaks: live NIV estimate could be solved for the actual NIV (now fresh noise per 5-min reading); D+1 intraday showed the 30-min clearing price before 15:30 (D+1 products now open after 15:30); Elexon picker showed the day's SIP range/difficulty; "Interconnector Trip" scenario title spoiled the event; "Optimal £" pills removed; BOAs only appear when the instruction arrives, skips only after the SP.
+- Asset switch BM↔non-BM blocked within an SP that had a BM order/BOA or a deviation (was a NIV-peek exploit).
+- Desk benchmark: "you" now over the same settled window; Imbalance "Total today" = P&L tab net (incl. fees/wear).
+- Slippage measured against the expected SIP shown when you applied (stored as `expectedSip` in the ledger); DA Today uses the same live NIV estimate.
+- DA "Arbitrage" presets never buy more than fits (floor); projected imbalance shown to 0.1 MWh.
+- Imbalance chart markers from ledger deviations (not DA/ID trades); intra-SP slider resets per interval.
+- Academy: steps count only activity after the lesson opened and stay ticked; back-to-sandbox keeps the session and restores the asset type; live news shown; BM step hint covers "not needed".
+- BM revenue-stream card follows the Imbalance selection instead of toggling it.
+- `submitBlockOrderAction` goes through the checked block path.
+- Removed dead state/types (priceHistory, currentPrice, mode, tutorial, bm, analysis, triadAlert, Order/Position/BmOffer…), App.css/assets; index.css purged 150 KB → 65 KB (PurgeCSS, recharts safelisted, screenshots compared).
+- Lint clean (0 errors). Tests: 78.

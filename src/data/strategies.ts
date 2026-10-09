@@ -19,6 +19,8 @@ export interface Strategy {
   markets: SandboxView[];
   // Not yet simulated — shown greyed-out, can't be selected/activated.
   comingSoon?: boolean;
+  // Part of another stream's view (not a tab of its own) — follows that tab's selection.
+  includedIn?: SandboxView;
 }
 
 export const STRATEGIES: Strategy[] = [
@@ -41,7 +43,7 @@ export const STRATEGIES: Strategy[] = [
     name: 'Intraday Continuous',
     streamLabel: 'Intraday',
     tagline: 'Order book per half-hour until one hour before delivery',
-    description: 'Continuous trading on an order book for each half-hour of today and (after the DA auction) tomorrow. Market, limit, IOC and FOK orders; trading closes at T-60. Use it to re-optimise your day-ahead position as forecasts and news change.',
+    description: 'Continuous trading on an order book for each half-hour of today and (after the 15:30 auction) tomorrow. Market, limit, IOC and FOK orders; trading closes at T-60. Use it to re-optimise your day-ahead position as forecasts and news change.',
     howItWorks: 'Crossing the spread fills immediately but costs the spread; a resting limit order may fill later at your price — or never. Example: you sold DA at £60 for 17:30, a wind revision pushes ID to £85 — sell more, or buy back a position you cannot deliver before the gate closes.',
     keyMetrics: 'P&L from ID fills, spread paid, position changes vs DA-only.',
     tip: 'Liquidity and prices move most after news and as the gate approaches. Check the Desk risk book before trading: power and SoC limits apply to your NET position.',
@@ -68,14 +70,14 @@ export const STRATEGIES: Strategy[] = [
     mode: GameMode.BM_PARTICIPATION,
     name: 'Balancing Mechanism (BM)',
     streamLabel: 'Balancing Mechanism',
-    tagline: 'In the Imbalance tab: switch the asset to "BM unit"',
+    tagline: 'Part of the Imbalance tab: switch the asset to "BM unit"',
     description: 'As a BM unit you follow your FPN and post offers (paid to discharge more) and bids (pay to charge more) per SP until T-60. NESO accepts when the system needs you and your price is in merit — pay-as-bid, often partial, and batteries are frequently skipped.',
     howItWorks: 'Switch Asset → BM unit in the Imbalance action panel, enter MW and £ for upcoming SPs and watch the BOAs: accepted (with cash), partial, or skipped.',
     keyMetrics: 'Acceptance rate, BM revenue, skips.',
     tip: 'Offers are taken when the system is short and bids when it is long. Price too high and you are never taken; too low and you leave money on the table.',
     difficulty: 'Intermediate',
     realWorld: 'Batteries are a growing share of BM actions, but skip rates remain a known issue for storage in the NESO control room.',
-    view: 'imbalance',
+    includedIn: 'imbalance',
     markets: ['imbalance'],
   },
   {

@@ -90,7 +90,6 @@ export default function SaveManager({ state, dataSource, onLoad }: Props) {
                         <div className="save-item-name">{s.name}</div>
                         <div className="save-item-meta">
                           <span>{s.date}</span>
-                          <span>{s.mode.replace(/_/g, ' ')}</span>
                           <span className={s.netProfit >= 0 ? 'positive' : 'negative'}>
                             {s.netProfit >= 0 ? '+' : ''}£{s.netProfit.toFixed(2)}
                           </span>

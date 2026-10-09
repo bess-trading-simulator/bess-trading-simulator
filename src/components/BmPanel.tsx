@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { BmStandingOrder, GameState } from '../engine/types';
 import { getUtcDayStart, getSettlementPeriod, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from '../engine/clock';
 import HelpIcon from './HelpIcon';
+import { visibleBoas } from '../engine/gameState';
 
 interface Props {
   state: GameState;
@@ -34,7 +35,7 @@ export default function BmPanel({ state, onSetBmOrder }: Props) {
     };
     return { sp, open, o, key, d };
   });
-  const accepted = (state.bmAcceptances ?? []).filter(a => a.day === today).slice().reverse();
+  const accepted = visibleBoas(state).filter(a => a.day === today).slice().reverse();
   const P = state.battery.config.powerRatingMw;
   const num = (v: string) => (v.trim() === '' ? NaN : Number(v));
 

@@ -37,9 +37,9 @@ export default function RevenueStreams({ enabledViews, onToggleView }: Props) {
 
             <div className="launcher-grid">
               {STRATEGIES.map(s => {
-                const Icon = s.view ? viewIcons[s.view] : Lock;
+                const Icon = (s.view ?? s.includedIn) ? viewIcons[(s.view ?? s.includedIn)!] : Lock;
                 const selectable = !!s.view && !s.comingSoon;
-                const isSelected = selectable && enabledViews.includes(s.view!);
+                const isSelected = s.includedIn ? enabledViews.includes(s.includedIn) : selectable && enabledViews.includes(s.view!);
                 return (
                   <button
                     key={s.mode}
@@ -56,6 +56,7 @@ export default function RevenueStreams({ enabledViews, onToggleView }: Props) {
                       </div>
                       {s.comingSoon
                         ? <span className="strategy-soon-tag"><Lock size={11} /> Coming soon</span>
+                        : s.includedIn && !isSelected ? <span className="strategy-soon-tag">with Imbalance</span>
                         : isSelected && <CheckCircle2 size={18} className="launcher-card-check" />}
                     </div>
                     <p>{s.description}</p>

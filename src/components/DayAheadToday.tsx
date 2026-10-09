@@ -1,9 +1,9 @@
 import type { DayAheadState, SettlementEntry } from '../engine/types';
 import { OrderSide } from '../engine/types';
 import { hourlyPrices, bidFills } from '../engine/dayAheadAuction';
-import { nivForecastError, NIV_FORECAST_BAND } from '../engine/ukMarket';
+import { nivEstimate } from '../engine/ukMarket';
 import type { BatteryState } from '../engine/battery';
-import { getUtcDayStart, getSettlementPeriod, formatDeliveryDay } from '../engine/clock';
+import { getUtcDayStart, getSettlementPeriod, formatDeliveryDay, subStepIndex } from '../engine/clock';
 import { findEntry, signedMw } from '../engine/settlement';
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import HelpIcon from './HelpIcon';
@@ -77,7 +77,9 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
       return { niv: dayAhead.niv[sp] ?? 0, sip: dayAhead.sipOutturn[sp] ?? null, band: 0 };
     }
     if (sp === currentSp) {
-      return { niv: (dayAhead.niv[sp] ?? 0) + nivForecastError(sp, dayIdx), sip: null, band: NIV_FORECAST_BAND };
+      // Same live estimate as the Imbalance view (sharpens every 5 minutes).
+      const est = nivEstimate(dayAhead.niv[sp] ?? 0, sp, dayIdx, subStepIndex(currentTime));
+      return { niv: est.niv, sip: null, band: est.band };
     }
     return null;
   };
@@ -183,9 +185,9 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
               {imbMwh.toFixed(1)} MWh so far at SIP
               {(projectedShort > 0.05 || projectedLong > 0.05) && (
                 <span className="negative">
-                  {' '}· ⚠ projected {projectedShort > 0.05 ? `short ${projectedShort.toFixed(0)} MWh` : ''}
+                  {' '}· ⚠ projected {projectedShort > 0.05 ? `short ${projectedShort.toFixed(1)} MWh` : ''}
                   {projectedShort > 0.05 && projectedLong > 0.05 ? ', ' : ''}
-                  {projectedLong > 0.05 ? `long ${projectedLong.toFixed(0)} MWh` : ''}
+                  {projectedLong > 0.05 ? `long ${projectedLong.toFixed(1)} MWh` : ''}
                 </span>
               )}
             </div>
