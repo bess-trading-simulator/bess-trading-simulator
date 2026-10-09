@@ -646,3 +646,13 @@ Fixed:
 - `submitBlockOrderAction` goes through the checked block path.
 - Removed dead state/types (priceHistory, currentPrice, mode, tutorial, bm, analysis, triadAlert, Order/Position/BmOffer…), App.css/assets; index.css purged 150 KB → 65 KB (PurgeCSS, recharts safelisted, screenshots compared).
 - Lint clean (0 errors). Tests: 78.
+
+## S4.19 — Verification round + copy pass (2026-10-09)
+Second audit round (engine sim 100 runs + UI sweep): all S4.18 fixes verified (nivEstimate not invertible, D+1 ID closed till 15:30, asset-switch guard, visibleBoas timing, expectedSip plumbing, benchmarks window, block path, autosave round-trip incl. legacy saves). Fixed what it found:
+- Academy lesson-switch race: switching lessons evaluated the new lesson against the old run's window → "Next lesson" could instantly mark it done. Runs are now a single state object; evaluation skipped during the switch render; done-write moved to an effect.
+- Save/Load feedback: storage-full save and rejected old saves now show a message instead of failing silently (loadSavedState returns boolean).
+- index.html: description/og/twitter texts updated, og:url + preview images point to bess-trading-simulator.com (was the Vercel deploy).
+- BOA display nit: a mid-SP BOA's cash/position no longer shows in P&L and Desk before its instruction arrives (pnl.boaArrived).
+- Copy pass (weniger "AI-laut"): no CAPS shouting (CLEARING/YOUR/WITH/PAID…), no hype ("Excellent", "Classic", "Tests your patience", "Professional desks typically…"), "Charge!" news headline neutralised, hero/launcher texts tightened.
+- Dead code: cycleLog/CycleEntry log (bloated every autosave), dispatch logPrice/timestamp params, GameMode (strategies now use plain ids), clock getHour/getMinute/isWeekend/formatTime/getDayOfWeek, marketDay.todayFromState, historicalDays peakDemandGw/isTriadRisk/optimalRevenue, SaveSlot.mode, data-tutorial attr, empty CSS section headers + dead keyframes.
+Tests: 78. Lint: 0. Browser: full flows re-run incl. Academy switch regression, save/load, light mode — clean.

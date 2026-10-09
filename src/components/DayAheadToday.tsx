@@ -145,7 +145,7 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3>Today's delivery · day-ahead schedule</h3>
-          <HelpIcon text="The schedule you won in YESTERDAY's auction is delivered today, half-hour by half-hour. DA contracts settle at their clearing price; intraday trades adjust the net position; the battery dispatches the NET contract at the start of each SP. Anything it can't deliver (SoC/power) — or deliberately deviates — settles as imbalance at the SIP after the SP." />
+          <HelpIcon text="The schedule you won in yesterday's auction is delivered today, half-hour by half-hour. DA contracts settle at their clearing price; intraday trades adjust the net position; the battery dispatches the NET contract at the start of each SP. Anything it cannot deliver (SoC/power), plus any deliberate deviation, settles as imbalance at the SIP after the SP." />
           <span className="da-delivery-badge">
             Delivery <strong>{formatDeliveryDay(today)}</strong> · {dayAhead.todaySource === 'real' ? 'Real data' : 'Simulated'}
           </span>
@@ -226,7 +226,7 @@ export default function DayAheadToday({ dayAhead, ledger, battery, currentTime }
       <div className="da-bid-section">
         <h4 className="da-section-title">
           Yesterday's auctions · your orders for today
-          <HelpIcon text="Every order you submitted in yesterday's auction for today. Buy (charge) fills if the clearing price is at or below your max; sell (discharge) fills if it is at or above your min. Filled orders settle at the CLEARING price, not your limit." />
+          <HelpIcon text="Every order you submitted in yesterday's auction for today. Buy (charge) fills if the clearing price is at or below your max; sell (discharge) fills if it is at or above your min. Filled orders settle at the clearing price, not at your limit." />
         </h4>
         {orders.length === 0 ? (
           <div className="muted da-section-empty">

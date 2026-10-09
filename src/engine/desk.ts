@@ -5,7 +5,7 @@ import type { GameState } from './types';
 import { OrderSide } from './types';
 import { getUtcDayStart, getSettlementPeriod, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
 import { signedMw } from './settlement';
-import { dayPnl, spPnl } from './pnl';
+import { dayPnl, spPnl, boaArrived } from './pnl';
 
 const SP_HOURS = 0.5;
 const DAY_MS = 86_400_000;
@@ -45,7 +45,8 @@ export function forwardBook(state: GameState, count = 8): { rows: RiskRow[]; war
     const idx = curSp + i;
     const day = today + Math.floor(idx / 48) * DAY_MS;
     const sp = idx % 48;
-    const positions = state.dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === sp);
+    // A BOA only shows once its instruction has arrived (same rule as the P&L).
+    const positions = state.dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === sp && boaArrived(state, p));
     const netMw = round2(positions.reduce((a, p) => a + signedMw(p), 0));
     const working = state.intraday.orders.filter(o => (o.status === 'working' || o.status === 'partial') && o.deliveryDay === day && o.period === sp);
     let pendingBuyMw = working.filter(o => o.side === OrderSide.BUY).reduce((a, o) => a + o.qtyMw - o.filledMw, 0);

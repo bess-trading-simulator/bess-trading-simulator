@@ -1,8 +1,8 @@
-import { GameMode } from '../engine/types';
 import type { SandboxView } from '../components/SandboxLauncher';
 
 export interface Strategy {
-  mode: GameMode;
+  // Stable id (used as the React key).
+  id: string;
   name: string;
   // Short market/revenue-stream label used in the launcher + revenue-streams menu.
   streamLabel: string;
@@ -25,7 +25,7 @@ export interface Strategy {
 
 export const STRATEGIES: Strategy[] = [
   {
-    mode: GameMode.ARBITRAGE,
+    id: 'dayahead',
     name: 'Day-Ahead Auctions',
     streamLabel: 'Day-Ahead',
     tagline: 'Blind auctions for tomorrow: hourly 09:20, half-hourly 15:30',
@@ -39,7 +39,7 @@ export const STRATEGIES: Strategy[] = [
     markets: ['dayahead'],
   },
   {
-    mode: GameMode.INTRADAY,
+    id: 'intraday',
     name: 'Intraday Continuous',
     streamLabel: 'Intraday',
     tagline: 'Order book per half-hour until one hour before delivery',
@@ -53,7 +53,7 @@ export const STRATEGIES: Strategy[] = [
     markets: ['intraday'],
   },
   {
-    mode: GameMode.NIV_CHASING,
+    id: 'imbalance',
     name: 'Imbalance (NIV chasing)',
     streamLabel: 'Imbalance',
     tagline: 'Deliberately deviate in the system\'s direction, settle at SIP',
@@ -67,7 +67,7 @@ export const STRATEGIES: Strategy[] = [
     markets: ['imbalance'],
   },
   {
-    mode: GameMode.BM_PARTICIPATION,
+    id: 'bm',
     name: 'Balancing Mechanism (BM)',
     streamLabel: 'Balancing Mechanism',
     tagline: 'Part of the Imbalance tab: switch the asset to "BM unit"',
@@ -81,7 +81,7 @@ export const STRATEGIES: Strategy[] = [
     markets: ['imbalance'],
   },
   {
-    mode: GameMode.FREQUENCY_RESPONSE,
+    id: 'ancillary',
     name: 'Frequency Response (DC/DM/DR)',
     streamLabel: 'Ancillary services',
     tagline: 'Availability payments for frequency response — not simulated',

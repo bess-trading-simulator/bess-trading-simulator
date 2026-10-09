@@ -1,4 +1,4 @@
-// Academy lessons: short guided missions on the REAL sandbox views. Each step is
+// Academy lessons: short guided missions on the real sandbox views. Each step is
 // checked against the live game state (ledger, auction results, orders, BOAs),
 // so a lesson is complete when you've actually done it in the market.
 
@@ -79,14 +79,14 @@ export const LESSONS: Lesson[] = [
     assetType: 'non-bm',
     ideas: [
       'The hourly auction (EPEX GB) closes at 09:20 UK for tomorrow. You only see a desk forecast — the clearing price is hidden until the gate.',
-      'A buy fills if the clearing price is at or below your max, a sell if it is at or above your min — and you are paid the CLEARING price, not your limit.',
+      'A buy fills if the clearing price is at or below your max, a sell if it is at or above your min — and fills settle at the clearing price, not at your limit.',
       'Read the desk signals (gas, wind revision, temperature, news) to judge where the forecast is wrong.',
       'Only part of an arbitrage may fill. Linked block orders make the discharge depend on the charge.',
       'At 15:30 a second, half-hourly auction lets you reshape the hourly position.',
     ],
     steps: [
       {
-        title: 'Submit buy AND sell orders for tomorrow before 09:20',
+        title: 'Submit buy and sell orders for tomorrow before 09:20',
         hint: 'Day Ahead → Hourly auction. Try "Arbitrage · safe", then Submit. If it is already past 09:20, step to midnight for the next auction.',
         done: ({ state }) => {
           const d = state.dayAhead;
@@ -158,7 +158,7 @@ export const LESSONS: Lesson[] = [
         done: c => ledgerSince(c).some(e => new Set((e.deviationProfile ?? []).map(v => Math.round(v)).filter(v => v !== 0)).size >= 2),
       },
       {
-        title: 'Make a call WITH the system and let it settle',
+        title: 'Trade with the system and let it settle',
         hint: 'Discharge into a short system (NIV estimate > 0) or charge into a long one, then step past the SP.',
         done: c => ledgerSince(c).some(e => e.settled && deviated(e) && e.deliveryDay === getUtcDayStart(c.state.clock.currentTime)
           && Math.sign(e.deviationMw) === Math.sign(c.state.dayAhead.niv[e.period] ?? 0)),
@@ -179,7 +179,7 @@ export const LESSONS: Lesson[] = [
     ideas: [
       'A BM unit must follow its Final Physical Notification (FPN) — no deliberate deviation.',
       'Instead you post an OFFER (paid to discharge more) and a BID (pay to charge more) per SP, changeable until gate closure (T-60).',
-      'NESO accepts when the system needs you and your price is in merit: offers when short, bids when long. You are paid YOUR price (pay-as-bid).',
+      'NESO accepts when the system needs you and your price is in merit: offers when short, bids when long. Accepted volume is paid at your own price (pay-as-bid).',
       'In-merit batteries are often still "skipped" by the control room, and acceptances can be partial or start mid-SP.',
     ],
     steps: [

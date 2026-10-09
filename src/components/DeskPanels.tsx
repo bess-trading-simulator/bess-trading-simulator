@@ -95,7 +95,7 @@ function ReviewView({ state }: { state: GameState }) {
         {b.naive === null && <div className="muted desk-capture">Naive schedule (charge 00–02, discharge 17–19) is shown once the day has reached 19:00.</div>}
         {b.capturePct !== null && (
           <div className="muted desk-capture">
-            You captured <strong>{b.capturePct}%</strong> of the hindsight optimum. Professional desks typically capture well below 100% — imbalance and intraday can push above the DA-only optimum.
+            You captured <strong>{b.capturePct}%</strong> of the hindsight optimum. The optimum is DA-only; imbalance and intraday can take you above it.
           </div>
         )}
       </div>

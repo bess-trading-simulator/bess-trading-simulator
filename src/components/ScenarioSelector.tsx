@@ -104,10 +104,7 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         realData: true,
         niv: data.niv,
         windPct: avgWind,
-        peakDemandGw: 0,
-        isTriadRisk: false,
         keyEvents: [],
-        optimalRevenue: 0,
         teachingPoints: [
           'This is real market data — prices reflect actual supply, demand, and weather conditions',
           'Compare your result with the hindsight optimum in Desk → Review and the P&L tab',
