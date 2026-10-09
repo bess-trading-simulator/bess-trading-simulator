@@ -55,6 +55,7 @@ export default function Academy(props: Props) {
   useEffect(() => {
     if (!complete || done.includes(lesson.id)) return;
     const next = [...done, lesson.id];
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-off completion latch
     setDone(next);
     try { localStorage.setItem(DONE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
   }, [complete, lesson.id, done]);
