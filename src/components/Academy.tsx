@@ -32,11 +32,16 @@ export default function Academy(props: Props) {
   const [startedAt, setStartedAt] = useState(state.clock.currentTime);
   const [openedId, setOpenedId] = useState(lesson.id);
   const [done, setDone] = useState<number[]>(loadDone);
+  // Steps stay ticked once done (e.g. across midnight, when today's data rolls over).
+  const [ticked, setTicked] = useState<boolean[]>([]);
+  // Asset registration on entry — restored when leaving the Academy.
+  const [entryAsset] = useState<AssetType>(state.assetType ?? 'non-bm');
 
   // (Re)start the step tracking when a lesson is opened; set the asset type it needs.
   if (openedId !== lesson.id) {
     setOpenedId(lesson.id);
     setStartedAt(state.clock.currentTime);
+    setTicked([]);
   }
   const { onSetAssetType } = props;
   const needAsset = lesson.assetType;
@@ -46,7 +51,8 @@ export default function Academy(props: Props) {
   }, [lesson.id, needAsset, haveAsset, onSetAssetType]);
 
   const ctx = { state, startedAt };
-  const status = lesson.steps.map(s => s.done(ctx));
+  const status = lesson.steps.map((s, i) => !!ticked[i] || s.done(ctx));
+  if (status.some((v, i) => v && !ticked[i])) setTicked(status);
   const complete = status.every(Boolean);
   if (complete && !done.includes(lesson.id)) {
     const next = [...done, lesson.id];
@@ -54,6 +60,10 @@ export default function Academy(props: Props) {
     try { localStorage.setItem(DONE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
   }
   const current = status.findIndex(s => !s);
+  const leave = () => {
+    if ((state.assetType ?? 'non-bm') !== entryAsset) onSetAssetType(entryAsset);
+    props.onOpenSandbox();
+  };
 
   return (
     <div className="app academy">
@@ -75,7 +85,7 @@ export default function Academy(props: Props) {
             compact
           />
           <span className="hdr-sep" />
-          <button className="btn btn-ghost btn-sm" onClick={props.onOpenSandbox}><ArrowLeft size={14} /> Sandbox</button>
+          <button className="btn btn-ghost btn-sm" onClick={leave}><ArrowLeft size={14} /> Sandbox</button>
         </div>
       </header>
 
@@ -109,7 +119,7 @@ export default function Academy(props: Props) {
                   Lesson complete.{' '}
                   {lesson.id < LESSONS.length
                     ? <button className="btn btn-sm btn-buy" onClick={() => onSelectLesson(lesson.id + 1)}>Next lesson →</button>
-                    : <button className="btn btn-sm btn-buy" onClick={props.onOpenSandbox}>Go to the sandbox →</button>}
+                    : <button className="btn btn-sm btn-buy" onClick={leave}>Go to the sandbox →</button>}
                 </li>
               )}
             </ol>

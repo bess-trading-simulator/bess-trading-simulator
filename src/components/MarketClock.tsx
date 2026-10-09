@@ -1,3 +1,4 @@
+import { speedOptions } from './speedOptions';
 import type { SpeedPreset } from '../engine/types';
 import { formatHour, getSettlementPeriod } from '../engine/clock';
 import { Pause, Play, RotateCcw, SkipForward } from 'lucide-react';
@@ -14,13 +15,7 @@ interface Props {
   compact?: boolean;
 }
 
-export const speedOptions: { key: SpeedPreset; label: string }[] = [
-  { key: 'manual', label: 'Manual' },
-  { key: 'slow', label: 'Slow' },
-  { key: 'normal', label: 'Normal' },
-  { key: 'fast', label: 'Fast' },
-  { key: 'ultra', label: 'Ultra' },
-];
+
 
 export default function MarketClock({ currentTime, isPaused, speed, onTogglePause, onSetSpeed, onStepForward, onReset, compact = false }: Props) {
   const d = new Date(currentTime);

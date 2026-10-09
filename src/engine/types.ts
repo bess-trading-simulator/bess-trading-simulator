@@ -1,5 +1,5 @@
 import type { BatteryState } from './battery';
-import type { TradePosition, AnalysisSummary } from './ukMarket';
+import type { TradePosition } from './ukMarket';
 
 export const MarketType = {
   SPOT: 'spot',
@@ -15,54 +15,14 @@ export const OrderSide = {
 } as const;
 export type OrderSide = typeof OrderSide[keyof typeof OrderSide];
 
-export const OrderType = {
-  MARKET: 'market',
-  LIMIT: 'limit',
-} as const;
-export type OrderType = typeof OrderType[keyof typeof OrderType];
-
-export const OrderStatus = {
-  PENDING: 'pending',
-  FILLED: 'filled',
-  CANCELLED: 'cancelled',
-  EXPIRED: 'expired',
-} as const;
-export type OrderStatus = typeof OrderStatus[keyof typeof OrderStatus];
-
 export const GameMode = {
   ARBITRAGE: 'arbitrage',
   NIV_CHASING: 'niv_chasing',
   INTRADAY: 'intraday',
-  TRIAD_MANAGEMENT: 'triad_management',
   FREQUENCY_RESPONSE: 'frequency_response',
   BM_PARTICIPATION: 'bm_participation',
-  REVENUE_STACKING: 'revenue_stacking',
 } as const;
 export type GameMode = typeof GameMode[keyof typeof GameMode];
-
-// Re-export Order and Position interfaces used by market.ts, portfolio.ts, and components
-export interface Order {
-  id: string;
-  marketType: MarketType;
-  side: OrderSide;
-  orderType: OrderType;
-  volumeMw: number;
-  priceLimit: number | null;
-  targetHour: number;
-  createdAt: number;
-  status: OrderStatus;
-  filledPrice: number | null;
-  filledVolume: number;
-}
-
-export interface Position {
-  hourLabel: string;
-  volumeMw: number;
-  avgEntryPrice: number;
-  marketType: MarketType;
-  currentPrice: number;
-  unrealizedPnl: number;
-}
 
 export type SpeedPreset = 'manual' | 'slow' | 'normal' | 'fast' | 'ultra';
 
@@ -74,16 +34,7 @@ export const SPEED_MS: Record<SpeedPreset, number> = {
   ultra: 100,
 };
 
-export type AppView = 'imbalance' | 'intraday' | 'dayahead' | 'forecast' | 'pnl' | 'analysis';
-
-export interface HourlyPrice {
-  timestamp: number;
-  price: number; // £/MWh
-  demandMw: number;
-  renewablePct: number;
-  basePrice: number;
-  eventImpact: number;
-}
+export type AppView = 'imbalance' | 'intraday' | 'dayahead' | 'forecast' | 'pnl';
 
 export interface Trade {
   orderId: string;
@@ -329,6 +280,8 @@ export interface SettlementEntry {
   feesCash?: number;
   /** Battery wear cost on metered throughput (negative £) */
   degradationCash?: number;
+  /** Expected SIP shown when you last set the deviation (for slippage review) */
+  expectedSip?: number;
 }
 
 /** P&L of one delivery day, by source (£, + = gain). */
@@ -383,13 +336,7 @@ export interface MarketEvent {
   headline: string;
   description: string;
   priceImpact: number;
-  category: 'weather' | 'outage' | 'demand' | 'renewable' | 'policy' | 'triad';
-}
-
-export interface TutorialState {
-  currentStep: number;
-  isActive: boolean;
-  completed: boolean;
+  category: 'weather' | 'outage' | 'demand' | 'renewable' | 'policy';
 }
 
 export interface DayAheadState {
@@ -436,26 +383,6 @@ export interface DayAheadState {
   playerSchedule: TradePosition[];
 }
 
-export type BmDirection = 'bid' | 'offer';
-
-export interface BmOffer {
-  id: string;
-  period: number;
-  direction: BmDirection;
-  mw: number;
-  price: number;
-  accepted: boolean;
-  submittedAt: number;
-  reason: string;
-  acceptanceProbability: number;
-  stackRank: number;
-}
-
-export interface BmState {
-  offers: BmOffer[];
-  accepted: BmOffer[];
-}
-
 export interface GameState {
   clock: {
     currentTime: number;
@@ -463,17 +390,10 @@ export interface GameState {
     speed: SpeedPreset;
     startTime: number;
   };
-  priceHistory: HourlyPrice[];
-  currentPrice: HourlyPrice | null;
   battery: BatteryState;
   trades: Trade[];
   events: MarketEvent[];
-  mode: GameMode;
-  tutorial: TutorialState;
   dayAhead: DayAheadState;
-  bm: BmState;
-  analysis: AnalysisSummary | null;
-  triadAlert: boolean;
   /** Market data of the NEXT delivery day — the day the open DA auction is for. */
   nextDay: MarketDay;
   intraday: IntradayState;

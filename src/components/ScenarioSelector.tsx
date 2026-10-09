@@ -90,16 +90,15 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         return;
       }
 
-      const maxPrice = Math.max(...data.sipPrices);
-      const minPrice = Math.min(...data.sipPrices);
       const avgWind = 0.25; // can't determine from price data alone
 
       const day: HistoricalDay = {
         id: `elexon-${fetchDate}`,
         date: fetchDate,
         title: `Real Market Data — ${fetchDate}`,
-        description: `Actual GB market data from Elexon: Market Index Price (MID, used as DA proxy), real SIP outturns, and NIV for ${fetchDate}. Price range: £${minPrice.toFixed(0)} to £${maxPrice.toFixed(0)}/MWh.`,
-        difficulty: maxPrice > 200 ? 'hard' : maxPrice > 100 ? 'medium' : 'easy',
+        // No prices here: this day becomes your day-ahead auction day.
+        description: `Actual GB market data from Elexon for ${fetchDate}: Market Index Price (MID, used as DA reference), real SIP and NIV, wind, demand and solar.`,
+        difficulty: 'medium',
         daPrices: data.daPrices,
         sipPrices: data.sipPrices,
         realData: true,
@@ -111,7 +110,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         optimalRevenue: 0,
         teachingPoints: [
           'This is real market data — prices reflect actual supply, demand, and weather conditions',
-          `Peak SIP was £${maxPrice.toFixed(2)}, trough was £${minPrice.toFixed(2)} — a spread of £${(maxPrice - minPrice).toFixed(2)}/MWh`,
           'Compare your result with the hindsight optimum in Desk → Review and the P&L tab',
         ],
       };
@@ -180,7 +178,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                       <div className="scenario-focus">{scenarioFocus(day)}</div>
                       <div className="scenario-stats">
                         <span>Wind: {Math.round(day.windPct * 100)}%</span>
-                        <span>Optimal: £{day.optimalRevenue.toLocaleString()}</span>
                       </div>
                     </button>
                   ))}
@@ -204,7 +201,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                 <div className="scenario-focus detail">{scenarioFocus(selected)}</div>
                 <div className="scenario-detail-stats">
                   <div className="stat-pill">Wind: {Math.round(selected.windPct * 100)}%</div>
-                  <div className="stat-pill">Optimal: £{selected.optimalRevenue.toLocaleString()}</div>
                 </div>
                 <div className="scenario-lessons">
                   <h4><BookOpen size={14} /> How this scenario runs</h4>
@@ -264,9 +260,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                   <div className="elexon-result">
                     <div className="scenario-detail-header">
                       <h3>{fetchedDay.title}</h3>
-                      <span className="scenario-difficulty" style={{ color: difficultyColors[fetchedDay.difficulty] }}>
-                        {fetchedDay.difficulty}
-                      </span>
                     </div>
                     <p className="scenario-detail-desc">{fetchedDay.description}</p>
                     <div className="scenario-lessons">

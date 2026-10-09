@@ -5,7 +5,7 @@ import type { GameState } from './types';
 import { OrderSide } from './types';
 import { getUtcDayStart, getSettlementPeriod, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
 import { signedMw } from './settlement';
-import { dayPnl } from './pnl';
+import { dayPnl, spPnl } from './pnl';
 
 const SP_HOURS = 0.5;
 const DAY_MS = 86_400_000;
@@ -189,7 +189,8 @@ export function benchmarks(state: GameState): Benchmarks {
       naive += out * (p - wear); soc -= out;
     }
   }
-  const you = dayPnl(state, today).net;
+  // Same window as the benchmarks: only SPs that are fully delivered and settled.
+  const you = spPnl(state, today).filter(r => r.sp < end).reduce((a, r) => a + r.net, 0);
   const optimum = end > 0 ? hindsightOptimum(prices, end, start, cap, P, eff, wear) : 0;
   return {
     window: end > 0 ? `00:00–${String(Math.floor(end / 2)).padStart(2, '0')}:${end % 2 === 0 ? '00' : '30'}` : '—',

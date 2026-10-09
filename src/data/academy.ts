@@ -5,6 +5,7 @@
 import type { GameState } from '../engine/types';
 import { OrderSide } from '../engine/types';
 import { getUtcDayStart } from '../engine/clock';
+import { visibleBoas } from '../engine/gameState';
 
 export type AcademyView = 'imbalance' | 'dayahead' | 'intraday';
 
@@ -31,7 +32,13 @@ export interface Lesson {
   steps: LessonStep[];
 }
 
-const today = (s: GameState) => getUtcDayStart(s.clock.currentTime);
+const HH = 30 * 60 * 1000;
+/** Start of the SP the lesson was opened in — activity from then on counts. */
+const lessonSpStart = (startedAt: number) => Math.floor(startedAt / HH) * HH;
+/** Ledger entries for SPs from the one the lesson was opened in. */
+const ledgerSince = ({ state, startedAt }: LessonContext) =>
+  state.ledger.filter(e => e.deliveryDay + e.period * HH >= lessonSpStart(startedAt));
+const deviated = (e: GameState['ledger'][number]) => Math.abs(e.deviationMw) >= 0.5;
 
 export const LESSONS: Lesson[] = [
   {
@@ -50,17 +57,17 @@ export const LESSONS: Lesson[] = [
       {
         title: 'Let time run one settlement period',
         hint: 'Use the step button (⏭) in the header — the clock moves to the next SP.',
-        done: ({ state, startedAt }) => state.clock.currentTime >= startedAt + 30 * 60 * 1000,
+        done: ({ state, startedAt }) => state.clock.currentTime >= lessonSpStart(startedAt) + HH,
       },
       {
         title: 'Charge or discharge in the running SP',
         hint: 'In the action panel, move the slider and click "Apply from …". With no contract, everything you do is imbalance.',
-        done: ({ state }) => state.ledger.some(e => e.deliveryDay === today(state) && Math.abs(e.deviationMw) >= 0.5),
+        done: c => ledgerSince(c).some(deviated),
       },
       {
         title: 'See it settle at the SIP',
         hint: 'Step past the end of that SP. The table "Today\'s imbalance trades" shows the SIP and your P&L.',
-        done: ({ state }) => state.ledger.some(e => e.deliveryDay === today(state) && Math.abs(e.deviationMw) >= 0.5 && e.settled),
+        done: c => ledgerSince(c).some(e => deviated(e) && e.settled),
       },
     ],
   },
@@ -96,8 +103,8 @@ export const LESSONS: Lesson[] = [
       {
         title: 'Deliver your schedule the next day',
         hint: 'Step past midnight and open Day Ahead → Today · delivery. Watch delivered vs contracted and any imbalance.',
-        done: ({ state }) => state.ledger.some(e => e.deliveryDay === today(state) && Math.abs(e.contractedMw) >= 0.5 && e.settled
-          && state.dayAhead.playerSchedule.some(p => p.deliveryDay === e.deliveryDay && p.period === e.period && p.market === 'da')),
+        done: c => ledgerSince(c).some(e => Math.abs(e.contractedMw) >= 0.5 && e.settled
+          && c.state.dayAhead.playerSchedule.some(p => p.deliveryDay === e.deliveryDay && p.period === e.period && p.market === 'da')),
       },
     ],
   },
@@ -110,24 +117,24 @@ export const LESSONS: Lesson[] = [
     ideas: [
       'Every half-hour has its own order book: bids (buyers) and asks (sellers). Crossing the spread fills now but costs the spread.',
       'A limit order rests in the book and may fill later at your price — or never. Market/IOC/FOK fill immediately or are cancelled.',
-      'Trading stops 1 hour before delivery (gate closure T-60). Tomorrow\'s products open after the DA auction.',
+      'Trading stops 1 hour before delivery (gate closure T-60). Tomorrow\'s products open after the 15:30 auction.',
       'Typical use: buy back a DA sale you can\'t deliver, or sell more when prices rise after news.',
     ],
     steps: [
       {
         title: 'Place an intraday order',
         hint: 'Click an open half-hour, choose side and type, submit. Watch the fills table.',
-        done: ({ state }) => state.intraday.orders.some(o => o.status !== 'rejected'),
+        done: ({ state, startedAt }) => state.intraday.orders.some(o => o.status !== 'rejected' && o.createdAt >= startedAt),
       },
       {
         title: 'Get a fill',
         hint: 'A market order fills immediately against the ladder; a limit order at the touch usually fills within a few steps.',
-        done: ({ state }) => state.intraday.fills.length > 0,
+        done: ({ state, startedAt }) => state.intraday.fills.some(f => f.time >= startedAt),
       },
       {
         title: 'Re-optimise a day-ahead position',
         hint: 'Trade a half-hour where you already hold a DA position (e.g. buy back part of a DA sale) — your net position changes.',
-        done: ({ state }) => state.intraday.fills.some(f => state.dayAhead.playerSchedule.some(p => p.market === 'da' && p.deliveryDay === f.deliveryDay && p.period === f.period)),
+        done: ({ state, startedAt }) => state.intraday.fills.some(f => f.time >= startedAt && state.dayAhead.playerSchedule.some(p => p.market === 'da' && p.deliveryDay === f.deliveryDay && p.period === f.period)),
       },
     ],
   },
@@ -147,18 +154,19 @@ export const LESSONS: Lesson[] = [
       {
         title: 'Steer within an SP using 5-minute set points',
         hint: 'Apply a set point, click "Next 5 min", change it — the boxes show your profile for the SP.',
-        done: ({ state }) => state.ledger.some(e => e.deliveryDay === today(state) && (e.deviationProfile ? new Set(e.deviationProfile.map(v => Math.round(v))).size > 1 : false)),
+        // at least two different non-zero set points within one SP
+        done: c => ledgerSince(c).some(e => new Set((e.deviationProfile ?? []).map(v => Math.round(v)).filter(v => v !== 0)).size >= 2),
       },
       {
         title: 'Make a call WITH the system and let it settle',
         hint: 'Discharge into a short system (NIV estimate > 0) or charge into a long one, then step past the SP.',
-        done: ({ state }) => state.ledger.some(e => e.deliveryDay === today(state) && e.settled && Math.abs(e.deviationMw) >= 0.5
-          && Math.sign(e.deviationMw) === Math.sign(state.dayAhead.niv[e.period] ?? 0)),
+        done: c => ledgerSince(c).some(e => e.settled && deviated(e) && e.deliveryDay === getUtcDayStart(c.state.clock.currentTime)
+          && Math.sign(e.deviationMw) === Math.sign(c.state.dayAhead.niv[e.period] ?? 0)),
       },
       {
         title: 'Review your calls',
         hint: 'Check hit rate and slippage at the top of the Imbalance view and the Desk → Review patterns.',
-        done: ({ state }) => state.ledger.filter(e => e.deliveryDay === today(state) && e.settled && Math.abs(e.deviationMw) >= 0.5).length >= 3,
+        done: c => ledgerSince(c).filter(e => e.settled && deviated(e)).length >= 3,
       },
     ],
   },
@@ -183,12 +191,12 @@ export const LESSONS: Lesson[] = [
       {
         title: 'Post an offer or bid for an upcoming SP',
         hint: 'Enter MW and £ for an SP more than an hour ahead and click Save. Evening peaks are often short.',
-        done: ({ state }) => (state.bmBook ?? []).length > 0 || (state.bmAcceptances ?? []).length > 0,
+        done: ({ state, startedAt }) => (state.bmBook ?? []).some(o => o.day + o.sp * HH > startedAt && (o.offerMw > 0 || o.bidMw > 0)),
       },
       {
         title: 'Get a decision from NESO',
-        hint: 'Step to that SP. You will see an accepted BOA (with cash) or a skip in "BOAs today".',
-        done: ({ state }) => (state.bmAcceptances ?? []).length > 0,
+        hint: 'Step through your SPs. A BOA appears when its instruction arrives; a skip (in merit but passed over) shows after the SP. If the system doesn\'t need you, nothing happens — offer on several SPs, e.g. the evening peak.',
+        done: ({ state, startedAt }) => visibleBoas(state).some(a => a.day + a.sp * HH >= lessonSpStart(startedAt)),
       },
     ],
   },

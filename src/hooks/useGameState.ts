@@ -58,8 +58,6 @@ export function useGameState() {
       return {
         ...saved,
         clock: { ...saved.clock, isPaused: true, speed: 'slow' },
-        tutorial: { currentStep: 0, isActive: false, completed: true },
-        bm: saved.bm ?? { offers: [], accepted: [] },
       };
     }
     return createGameState();
@@ -239,7 +237,7 @@ export function useGameState() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     // A saved game keeps its own market data; don't overwrite it with fetches.
     setRealMode(false);
-    setState({ ...saved, bm: saved.bm ?? { offers: [], accepted: [] } });
+    setState(saved);
   }, []);
 
   const reset = useCallback(() => {

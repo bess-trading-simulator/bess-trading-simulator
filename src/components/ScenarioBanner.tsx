@@ -32,7 +32,7 @@ export default function ScenarioBanner({ state }: { state: GameState }) {
         {phase === 'debrief' && (
           sc.teachingPoints.length
             ? <ul>{sc.teachingPoints.map((t, i) => <li key={i}>{t}</li>)}</ul>
-            : <p>Scenario day complete — review your results in Day Ahead → Today and in Analysis.</p>
+            : <p>Scenario day complete — review your results in Day Ahead → Today, the P&L tab and Desk → Review.</p>
         )}
       </div>
       <button className="btn btn-ghost btn-sm" onClick={() => setHidden(key)} aria-label="Dismiss"><X size={14} /></button>

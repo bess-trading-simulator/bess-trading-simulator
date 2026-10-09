@@ -41,7 +41,11 @@ export default function IntraSpControl({ state, onSetDeviation, onSubStep, hideS
   const xMin = Math.ceil(Math.max((range.min * SUB_STEPS_PER_SP - past) / n, -P - delivered));
   const xMax = Math.floor(Math.min((range.max * SUB_STEPS_PER_SP - past) / n, P - delivered));
   const current = profile[k] ?? 0;
-  const [target, setTarget] = useState<number | null>(null);
+  // Draft set point belongs to one SP/interval — a new interval starts from the live value.
+  const slot = `${day}-${sp}-${k}`;
+  const [draft, setDraft] = useState<{ slot: string; v: number } | null>(null);
+  const target = draft && draft.slot === slot ? draft.v : null;
+  const setTarget = (v: number | null) => setDraft(v == null ? null : { slot, v });
   const value = Math.max(xMin, Math.min(xMax, target ?? current));
 
   // Live system view for the running SP, sharper with every interval.

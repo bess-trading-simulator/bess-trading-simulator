@@ -220,8 +220,8 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
   {
     id: 'interconnector-trip',
     date: '2024-03-08',
-    title: 'Interconnector Trip — BM Stress',
-    description: 'Illustrative: an ordinary-looking day — until an interconnector trips in the afternoon and removes 1 GW of imports. Nobody saw it coming in the day-ahead auction.',
+    title: 'Ordinary Weekday — Watch the News',
+    description: 'Illustrative: an ordinary-looking spring weekday. Bid it like any other — then keep an eye on the news during delivery.',
     difficulty: 'hard',
     ...scenarioData(
       [68, 108, 92, 135, 76, 8, 1500], 24, [1600, 1700], {},

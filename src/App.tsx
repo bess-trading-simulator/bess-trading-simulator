@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { AppView, SpeedPreset } from './engine/types';
 import { useGameState } from './hooks/useGameState';
-import MarketClock, { speedOptions } from './components/MarketClock';
+import MarketClock from './components/MarketClock';
+import { speedOptions } from './components/speedOptions';
 import DayAheadAuction from './components/DayAheadAuction';
 import IntradayTrading from './components/IntradayTrading';
 import Glossary from './components/Glossary';
@@ -130,13 +131,18 @@ export default function App() {
         state={state}
         lessonId={lessonId}
         onSelectLesson={setLessonId}
-        onOpenSandbox={openSandbox}
+        onOpenSandbox={() => setAppMode('sandbox')} // back to the same session and markets
         onSetAssetType={setAssetType}
         onTogglePause={togglePause}
         onSetSpeed={setSpeed}
         onStepForward={stepForward}
         onReset={reset}
-        renderView={(v) => (v === 'imbalance' ? imbalanceView : v === 'intraday' ? intradayView : <div className="grid-main-full">{dayAheadInner}</div>)}
+        renderView={(v) => (
+          <>
+            <LiveNews events={state.events} now={state.clock.currentTime} />
+            {v === 'imbalance' ? imbalanceView : v === 'intraday' ? intradayView : <div className="grid-main-full">{dayAheadInner}</div>}
+          </>
+        )}
       />
     );
   }
