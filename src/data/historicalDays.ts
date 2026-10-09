@@ -22,10 +22,7 @@ export interface HistoricalDay {
   sipPrices: number[]; // 48 SPs
   niv: number[]; // 48 SPs
   windPct: number;
-  peakDemandGw: number;
-  isTriadRisk: boolean;
   keyEvents: { sp: number; text: string }[];
-  optimalRevenue: number; // £ with perfect foresight on 50MW battery
   teachingPoints: string[];
   /** true only for days loaded from Elexon: sipPrices are the real settled SIP. */
   realData?: boolean;
@@ -114,20 +111,17 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     id: 'calm-winter-weekday',
     date: '2024-01-15',
     title: 'Calm Winter Weekday',
-    description: 'A typical January weekday with moderate demand, light winds and a clear evening peak. Good for learning the basic day-ahead arbitrage.',
+    description: 'A typical January weekday: moderate demand, light winds, a clear evening peak. Straightforward day-ahead arbitrage.',
     difficulty: 'easy',
     ...scenarioData([65, 112, 97, 156, 81, 6, 100], 18, [200, 300]),
     windPct: 0.18,
-    peakDemandGw: 44.2,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 14, text: 'Morning demand ramp — prices rising as offices open' },
       { sp: 34, text: 'Evening peak under way — highest prices of the day' },
     ],
-    optimalRevenue: 8500,
     deskHints: { gasPct: 0.8, tempAnomalyC: -0.5 },
     teachingPoints: [
-      'Classic arbitrage day: charge overnight (~£63-68), discharge into the evening peak (~£150-160)',
+      'Charge overnight (~£63-68), discharge into the evening peak (~£150-160)',
       'Signals were quiet — the desk forecast was close, so tight limits worked',
       'Evening peaks on calm winter weekdays are predictable: a linked charge/discharge block is the safe way to bid them',
     ],
@@ -136,25 +130,22 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     id: 'high-wind-day',
     date: '2024-02-22',
     title: 'Storm Day — Extreme Wind',
-    description: 'Illustrative: a major storm system brings wind generation to record levels. Prices collapse overnight and go negative at low demand. Excellent charging opportunity.',
+    description: 'Illustrative: a major storm system brings wind generation to record levels. Prices collapse overnight and go negative at low demand.',
     difficulty: 'easy',
     ...scenarioData([-15, 40, 15, 85, 30, 8, 400], 26, [500, 600], {}, { 4: -35, 5: -45, 6: -38, 7: -25 }),
     windPct: 0.78,
-    peakDemandGw: 38.5,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 4, text: 'Negative prices — wind output exceeds demand, get paid to charge' },
       { sp: 22, text: 'Solar adds to oversupply — prices near zero' },
       { sp: 34, text: 'Evening peak still elevated but lower than normal' },
     ],
-    optimalRevenue: 12000,
     deskHints: {
       gasPct: -2.5, windRevisionMw: 3500, tempAnomalyC: 1,
       events: [{ kind: 'imports', startSp: 2, endSp: 13, confirmed: true, headline: 'Storm front arriving early: wind fleet at maximum overnight', effectPct: -0.25 }],
     },
     teachingPoints: [
       'Negative prices pay you to charge — bid generous buy limits overnight',
-      'The wind revision signal was large and positive: the desk forecast was too HIGH, actual prices came in lower',
+      'The wind revision signal was large and positive: the desk forecast was too high, actual prices came in lower',
       'High wind compresses the whole curve — lower peaks too, so the spread is smaller than it looks',
       'SIP was more volatile than DA — the system struggled to balance with so much wind',
     ],
@@ -172,21 +163,18 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
       { 34: 350, 35: 580, 36: 420, 37: 280 },
     ),
     windPct: 0.06,
-    peakDemandGw: 51.8,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 12, text: 'Demand forecast revised up to 51 GW — tight margins expected' },
       { sp: 30, text: 'NESO Capacity Market Notice — reserve margins thin this evening' },
       { sp: 34, text: 'System short — imbalance prices spiking' },
       { sp: 38, text: 'Peak passes — prices dropping but still elevated' },
     ],
-    optimalRevenue: 28000,
     deskHints: {
       gasPct: 5, tempAnomalyC: -4, windRevisionMw: -2500,
       events: [{ kind: 'outage', startSp: 32, endSp: 37, confirmed: true, headline: 'NESO: Electricity Margin Notice expected for 16:00–19:00', effectPct: 0.6 }],
     },
     teachingPoints: [
-      'Every signal pointed UP: colder, less wind, gas higher, a margin notice — the desk forecast was far too low at the peak',
+      'Every signal pointed the same way: colder, less wind, gas higher, a margin notice — the desk forecast was far too low at the peak',
       'Sell limits set at the forecast left money on the table; the auction cleared well above it',
       'Cold weather lifts the whole curve — even overnight charging was expensive',
       'SIP exceeded DA massively at the peak (system short by ~580 MWh): energy held back for imbalance earned the most',
@@ -197,22 +185,19 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     id: 'spring-solar-day',
     date: '2024-04-14',
     title: 'Spring Solar Sunday',
-    description: 'Bright spring Sunday with strong solar output. Low demand + high solar = near-zero midday prices. Classic duck curve.',
+    description: 'Bright spring Sunday with strong solar output. Low demand and high solar push midday prices towards zero (duck curve).',
     difficulty: 'medium',
     ...scenarioData([49, 76, 4, 108, 60, 8, 1100], 16, [1200, 1300], {}, { 22: -15, 23: -22, 24: -10, 25: 2 }),
     windPct: 0.22,
-    peakDemandGw: 30.5,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 20, text: 'Solar output peaks — prices approaching zero' },
-      { sp: 22, text: 'Negative prices as solar exceeds demand. Charge!' },
+      { sp: 22, text: 'Solar output exceeds demand in several regions; prices negative' },
       { sp: 32, text: 'Solar fading — prices ramping into the evening peak' },
     ],
-    optimalRevenue: 6500,
     deskHints: { gasPct: -1, tempAnomalyC: 2.5, windRevisionMw: 800 },
     teachingPoints: [
       'The duck curve: prices dip at midday from solar, then jump at sunset when solar drops off',
-      'Two charging windows: overnight AND the midday solar trough',
+      'Two charging windows: overnight and the midday solar trough',
       'The 30-min auction is ideal for the steep evening ramp: the two half-hours of an hour can differ a lot',
       'Weekend demand is ~20 % lower — that caps the evening peak',
     ],
@@ -232,15 +217,12 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     // A quiet D-1: no real news — the trip is unforeseeable.
     deskHints: { gasPct: -1, tempAnomalyC: 0.5, windRevisionMw: 300, events: [] },
     windPct: 0.20,
-    peakDemandGw: 42.0,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 31, text: 'Interconnector TRIPPED — 1 GW of imports lost instantly (unplanned)' },
       { sp: 32, text: 'NESO taking emergency BM actions — imbalance prices spiking' },
       { sp: 34, text: 'System still very short — BM offers accepted at £500+' },
       { sp: 37, text: 'Situation stabilising — other interconnectors increasing flow' },
     ],
-    optimalRevenue: 22000,
     teachingPoints: [
       'Unplanned outages cause the biggest DA-SIP divergence: the auction cleared ~£135 at the peak, SIP hit ~£690',
       'Nothing in the D-1 signals warned of it — you can only be prepared, not predict it',
@@ -253,17 +235,14 @@ export const HISTORICAL_DAYS: HistoricalDay[] = [
     id: 'summer-baseload',
     date: '2024-07-20',
     title: 'Quiet Summer Saturday',
-    description: 'Low demand summer weekend. Prices flat and the spread is thin. Tests your patience — sometimes the best trade is no trade.',
+    description: 'Low demand summer weekend. Prices are flat and the spread is thin. Some days the best trade is none.',
     difficulty: 'medium',
     ...scenarioData([52, 71, 55, 87, 60, 5, 1900], 13, [2000, 2100]),
     windPct: 0.30,
-    peakDemandGw: 28.0,
-    isTriadRisk: false,
     keyEvents: [
       { sp: 16, text: 'Morning ramp barely noticeable — weekend demand is flat' },
       { sp: 34, text: 'Evening "peak" is shallow — thin spread' },
     ],
-    optimalRevenue: 2800,
     deskHints: { gasPct: -1, windRevisionMw: 1000, tempAnomalyC: 0.5 },
     teachingPoints: [
       'Not every day pays: a peak-trough spread of ~£35 barely covers efficiency losses and degradation',

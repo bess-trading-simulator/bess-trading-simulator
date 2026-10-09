@@ -15,15 +15,6 @@ export const OrderSide = {
 } as const;
 export type OrderSide = typeof OrderSide[keyof typeof OrderSide];
 
-export const GameMode = {
-  ARBITRAGE: 'arbitrage',
-  NIV_CHASING: 'niv_chasing',
-  INTRADAY: 'intraday',
-  FREQUENCY_RESPONSE: 'frequency_response',
-  BM_PARTICIPATION: 'bm_participation',
-} as const;
-export type GameMode = typeof GameMode[keyof typeof GameMode];
-
 export type SpeedPreset = 'manual' | 'slow' | 'normal' | 'fast' | 'ultra';
 
 export const SPEED_MS: Record<SpeedPreset, number> = {

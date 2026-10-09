@@ -229,15 +229,16 @@ export function useGameState() {
   }, [startLive]);
 
 
-  const loadSavedState = useCallback((saved: GameState) => {
+  const loadSavedState = useCallback((saved: GameState): boolean => {
     if (!isCurrentSave(saved)) {
       console.warn('Save is from an older version of the simulator and cannot be loaded.');
-      return;
+      return false;
     }
     if (intervalRef.current) clearInterval(intervalRef.current);
     // A saved game keeps its own market data; don't overwrite it with fetches.
     setRealMode(false);
     setState(saved);
+    return true;
   }, []);
 
   const reset = useCallback(() => {

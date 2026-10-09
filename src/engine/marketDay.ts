@@ -277,32 +277,6 @@ export function scenarioMarketDay(
   };
 }
 
-/** Rebuild TODAY's MarketDay from the day-ahead state arrays (today = the running delivery day). */
-export function todayFromState(s: {
-  dayAhead: {
-    forecastPrices: number[]; sipOutturn: number[]; niv: number[];
-    demandForecast: number[]; windForecast: number[]; solarForecast: number[];
-    demandOutturn: number[]; windOutturn: number[]; solarOutturn: number[];
-    todaySource?: 'real' | 'synthetic';
-  };
-  nextDay: MarketDay;
-}): MarketDay {
-  const d = s.dayAhead;
-  return {
-    day: s.nextDay.day - DAY_MS,
-    source: d.todaySource ?? 'synthetic',
-    daForecast: d.forecastPrices,
-    daClearing: d.forecastPrices,
-    sipOutturn: d.sipOutturn,
-    niv: d.niv,
-    demandForecast: d.demandForecast,
-    windForecast: d.windForecast,
-    solarForecast: d.solarForecast,
-    demandOutturn: d.demandOutturn,
-    windOutturn: d.windOutturn,
-    solarOutturn: d.solarOutturn,
-  };
-}
 
 export function utcDateString(day: number): string {
   return new Date(day).toISOString().slice(0, 10);

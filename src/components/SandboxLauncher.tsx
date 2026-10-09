@@ -194,7 +194,7 @@ export default function SandboxLauncher({ onConfirm, onBack }: Props) {
             const isSelected = s.includedIn ? selected.has(s.includedIn) : selectable && selected.has(s.view!);
             return (
               <button
-                key={s.mode}
+                key={s.id}
                 className={`launcher-card ${isSelected ? 'selected' : ''} ${s.comingSoon ? 'disabled' : ''}`}
                 onClick={() => selectable && toggle(s.view!)}
                 aria-pressed={isSelected}

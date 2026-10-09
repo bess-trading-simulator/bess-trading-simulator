@@ -64,9 +64,8 @@ export function deliverPeriod(state: GameState, day: number, sp: number): GameSt
 
   const netMw = due.reduce((a, p) => a + signedMw(p), 0);
   const cash = due.reduce((a, p) => a + signedMw(p) * SP_HOURS * p.price, 0);
-  const avgPrice = due.reduce((a, p) => a + p.mw * p.price, 0) / Math.max(1e-9, due.reduce((a, p) => a + p.mw, 0));
 
-  const { newState, actualMw } = dispatchBattery(state.battery, netMw, now, avgPrice);
+  const { newState, actualMw } = dispatchBattery(state.battery, netMw);
   // Exchange fees on every DA / ID MWh traded for this SP (BM acceptances carry no exchange fee).
   const fees = -due.filter((p) => p.market === 'da' || p.market === 'id').reduce((a, p) => a + p.mw * SP_HOURS, 0) * EXCHANGE_FEE_PER_MWH;
   const battery = bookCash(bookCash(newState, cash), fees);
@@ -143,7 +142,7 @@ export function applyDeviation(state: GameState, day: number, sp: number, signed
   const want = signed > 0 ? Math.min(signed, room.discharge) : -Math.min(-signed, room.charge);
   if (Math.abs(want) < 0.01) return state;
   const prev = findEntry(state.ledger, day, sp) ?? emptyEntry(day, sp);
-  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.meteredMw + want, state.clock.currentTime, logPrice);
+  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.meteredMw + want);
   const change = actualMw - prev.meteredMw;
   if (Math.abs(change) < 0.01) return state;
   const entry: SettlementEntry = {
@@ -198,7 +197,7 @@ export function setDeviationSetpoint(state: GameState, day: number, sp: number, 
   const x = round2(Math.max(xMin, Math.min(xMax, setpointMw)));
   for (let i = k; i < SUB_STEPS_PER_SP; i++) profile[i] = x;
   const newDev = profile.reduce((a, v) => a + v, 0) / SUB_STEPS_PER_SP;
-  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.deliveredMw + newDev, now, logPrice);
+  const { newState, actualMw } = redispatchBattery(state.battery, prev.meteredMw, prev.deliveredMw + newDev);
   const entry: SettlementEntry = {
     ...prev,
     deviationProfile: profile,

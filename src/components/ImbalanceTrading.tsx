@@ -324,7 +324,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
       <div className="da-sticky-top">
         <div className="panel-header da-panel-header">
           <h3><Activity size={16} /> Imbalance / Cashout</h3>
-          <HelpIcon text="Imbalance trading isn't a market — it's deliberately running long or short of your declared position to capture the cashout price (SIP). You can't see the live SIP — only signals that hint at the direction. The SIP of each SP is published after it ends and shown in the chart and the table below." />
+          <HelpIcon text="Imbalance trading is not a market in itself: you deliberately run long or short of your declared position and are settled at the cashout price (SIP). The live SIP is not visible, only signals that hint at the direction. The SIP of each SP is published after it ends and shown in the chart and the table below." />
           <span className="da-delivery-badge">
             SP {currentSp + 1} · <strong>{minutesLeft} min</strong> left
           </span>
@@ -573,7 +573,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
             <div className="im-sp-price-row">
               <span className="im-sp-price-label">
                 Expected SIP
-                <HelpIcon text="Your EXPECTED price: the NIV forecast run through a simplified price model. You settle at the actual SIP published after the SP (on real Elexon days: the real SIP, set by marginal BM actions) — so your realised price can differ a lot (your slippage). Blind mode (eye toggle) hides this so you read the raw signals yourself." />
+                <HelpIcon text="Your expected price: the NIV forecast run through a simplified price model. You settle at the actual SIP published after the SP (on real Elexon days: the real SIP, set by marginal BM actions) — so your realised price can differ a lot (your slippage). Blind mode (eye toggle) hides this so you read the raw signals yourself." />
               </span>
               {hideSip ? (
                 <span className="im-sp-price-value im-sip-hidden">hidden</span>
@@ -633,7 +633,7 @@ export default function ImbalanceTrading({ state, onSetDeviation, onSubStep, onS
       <div className="im-activity">
         <h4>
           Today&apos;s imbalance trades
-          <HelpIcon text="You traded on the FORECAST SIP but settled at the actual one. Δ = Settled − Forecast = your realised forecast error. Hit = your direction helped the system per the actual NIV (charge when long / NIV < 0, discharge when short / NIV > 0)." />
+          <HelpIcon text="You traded on the forecast SIP but settled at the actual one. Δ = Settled − Forecast = your realised forecast error. Hit = your direction helped the system per the actual NIV (charge when long / NIV < 0, discharge when short / NIV > 0)." />
         </h4>
         {imbRows.length === 0 ? (
           <div className="empty-state" style={{ padding: 12 }}>

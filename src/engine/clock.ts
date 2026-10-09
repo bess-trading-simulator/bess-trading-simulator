@@ -39,32 +39,15 @@ export function subStepIndex(time: number): number {
   return Math.floor((time % HALF_HOUR_MS) / SUB_STEP_MS);
 }
 
-export function getHour(time: number): number {
-  return new Date(time).getUTCHours();
-}
 
-export function getMinute(time: number): number {
-  return new Date(time).getUTCMinutes();
-}
 
 export function getSettlementPeriod(time: number): number {
   const d = new Date(time);
   return d.getUTCHours() * 2 + (d.getUTCMinutes() >= 30 ? 1 : 0) + 1; // 1-48
 }
 
-export function getDayOfWeek(time: number): number {
-  return new Date(time).getUTCDay();
-}
 
-export function isWeekend(time: number): boolean {
-  const day = getDayOfWeek(time);
-  return day === 0 || day === 6;
-}
 
-export function formatTime(time: number): string {
-  const d = new Date(time);
-  return d.toUTCString().replace('GMT', 'UTC');
-}
 
 export function formatHour(time: number): string {
   const d = new Date(time);

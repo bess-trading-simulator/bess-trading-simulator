@@ -13,7 +13,6 @@ export interface SaveSlot {
   name: string;
   date: string; // scenario date or sim date
   savedAt: number; // epoch ms
-  mode?: string; // legacy saves
   netProfit: number;
   totalCycles: number;
   dataSource: string;
@@ -57,7 +56,6 @@ export function saveGame(state: GameState, name: string, dataSource: string): st
     dataSource,
   };
 
-  // Strip internal state before saving
   const toSave = state;
 
   try {

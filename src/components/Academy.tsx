@@ -29,20 +29,18 @@ function loadDone(): number[] {
 export default function Academy(props: Props) {
   const { state, lessonId, onSelectLesson } = props;
   const lesson = LESSONS.find(l => l.id === lessonId) ?? LESSONS[0];
-  const [startedAt, setStartedAt] = useState(state.clock.currentTime);
-  const [openedId, setOpenedId] = useState(lesson.id);
+  // One run per opened lesson: steps only count activity after it was opened, and
+  // stay ticked once done (e.g. across midnight, when today's data rolls over).
+  const [run, setRun] = useState(() => ({ id: lesson.id, startedAt: state.clock.currentTime, ticked: [] as boolean[] }));
   const [done, setDone] = useState<number[]>(loadDone);
-  // Steps stay ticked once done (e.g. across midnight, when today's data rolls over).
-  const [ticked, setTicked] = useState<boolean[]>([]);
   // Asset registration on entry — restored when leaving the Academy.
   const [entryAsset] = useState<AssetType>(state.assetType ?? 'non-bm');
 
-  // (Re)start the step tracking when a lesson is opened; set the asset type it needs.
-  if (openedId !== lesson.id) {
-    setOpenedId(lesson.id);
-    setStartedAt(state.clock.currentTime);
-    setTicked([]);
-  }
+  // Lesson switch: restart the run. Until the reset render lands, evaluate nothing —
+  // otherwise the new lesson's steps would latch against the previous run's window.
+  const fresh = run.id === lesson.id;
+  if (!fresh) setRun({ id: lesson.id, startedAt: state.clock.currentTime, ticked: [] });
+
   const { onSetAssetType } = props;
   const needAsset = lesson.assetType;
   const haveAsset = state.assetType ?? 'non-bm';
@@ -50,15 +48,16 @@ export default function Academy(props: Props) {
     if (needAsset !== haveAsset) onSetAssetType(needAsset);
   }, [lesson.id, needAsset, haveAsset, onSetAssetType]);
 
-  const ctx = { state, startedAt };
-  const status = lesson.steps.map((s, i) => !!ticked[i] || s.done(ctx));
-  if (status.some((v, i) => v && !ticked[i])) setTicked(status);
-  const complete = status.every(Boolean);
-  if (complete && !done.includes(lesson.id)) {
+  const ctx = { state, startedAt: run.startedAt };
+  const status = fresh ? lesson.steps.map((s, i) => !!run.ticked[i] || s.done(ctx)) : lesson.steps.map(() => false);
+  if (fresh && status.some((v, i) => v && !run.ticked[i])) setRun({ ...run, ticked: status });
+  const complete = fresh && status.every(Boolean);
+  useEffect(() => {
+    if (!complete || done.includes(lesson.id)) return;
     const next = [...done, lesson.id];
     setDone(next);
     try { localStorage.setItem(DONE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-  }
+  }, [complete, lesson.id, done]);
   const current = status.findIndex(s => !s);
   const leave = () => {
     if ((state.assetType ?? 'non-bm') !== entryAsset) onSetAssetType(entryAsset);

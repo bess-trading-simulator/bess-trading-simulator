@@ -13,7 +13,7 @@ export default function StartScreen({ onOpenSandbox }: Props) {
         <div className="start-title">
           <div>
             <h1>BESS Trading Simulator</h1>
-            <p>Trade GB battery energy storage on real Elexon market data — day-ahead, intraday and imbalance. Pick the markets you want and jump in.</p>
+            <p>Trade a GB grid-scale battery on real Elexon market data: day-ahead, intraday, imbalance and the Balancing Mechanism. Pick the markets you want to trade.</p>
           </div>
         </div>
         <div className="start-actions">

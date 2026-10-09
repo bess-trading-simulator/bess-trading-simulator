@@ -17,7 +17,6 @@ export interface BatteryState {
   totalDischargedMwh: number;
   totalChargeCost: number;
   totalDischargeRevenue: number;
-  cycleLog: CycleEntry[];
 }
 
 export interface CycleEntry {
@@ -50,7 +49,6 @@ export function createBattery(config?: Partial<BatteryConfig>): BatteryState {
     totalDischargedMwh: 0,
     totalChargeCost: 0,
     totalDischargeRevenue: 0,
-    cycleLog: [],
   };
 }
 
@@ -106,7 +104,6 @@ export function chargeBattery(
     totalChargedMwh: newTotalCharged,
     totalChargeCost: state.totalChargeCost + cost,
     totalCycles: newTotalCharged / state.config.capacityMwh,
-    cycleLog: [entry, ...state.cycleLog].slice(0, 100),
   };
 
   return { newState, entry };
@@ -147,7 +144,6 @@ export function dischargeBattery(
     totalDischargedMwh: newTotalDischarged,
     totalDischargeRevenue: state.totalDischargeRevenue + revenue,
     totalCycles: (state.totalChargedMwh) / state.config.capacityMwh,
-    cycleLog: [entry, ...state.cycleLog].slice(0, 100),
   };
 
   return { newState, entry };
@@ -158,13 +154,10 @@ export function dischargeBattery(
  * Physical dispatch only (no cash): signed MW for one SP, + = discharge,
  * − = charge, clipped to power and SoC limits. Cash is booked separately via
  * the settlement ledger (contracts at their price, imbalance at SIP).
- * `logPrice` is only used for the cycle log display.
  */
 export function dispatchBattery(
   state: BatteryState,
   signedMw: number,
-  timestamp: number,
-  logPrice: number,
   durationHours = 0.5,
 ): { newState: BatteryState; actualMw: number } {
   if (Math.abs(signedMw) < 0.01) return { newState: state, actualMw: 0 };
@@ -174,7 +167,6 @@ export function dispatchBattery(
     if (mw < 0.01) return { newState: state, actualMw: 0 };
     const mwh = mw * durationHours;
     const soc = Math.max(0, state.currentSocMwh - mwh);
-    const entry: CycleEntry = { timestamp, action: 'discharge', mw, price: logPrice, energyMwh: mwh, cost: mwh * logPrice };
     return {
       actualMw: mw,
       newState: {
@@ -182,7 +174,6 @@ export function dispatchBattery(
         currentSocMwh: soc,
         socPct: Math.round((soc / state.config.capacityMwh) * 10000) / 100,
         totalDischargedMwh: state.totalDischargedMwh + mwh,
-        cycleLog: [entry, ...state.cycleLog].slice(0, 100),
       },
     };
   }
@@ -192,7 +183,6 @@ export function dispatchBattery(
   const stored = gridMwh * eff;
   const soc = Math.min(state.config.capacityMwh, state.currentSocMwh + stored);
   const totalCharged = state.totalChargedMwh + stored;
-  const entry: CycleEntry = { timestamp, action: 'charge', mw, price: logPrice, energyMwh: stored, cost: -gridMwh * logPrice };
   return {
     actualMw: -mw,
     newState: {
@@ -201,7 +191,6 @@ export function dispatchBattery(
       socPct: Math.round((soc / state.config.capacityMwh) * 10000) / 100,
       totalChargedMwh: totalCharged,
       totalCycles: totalCharged / state.config.capacityMwh,
-      cycleLog: [entry, ...state.cycleLog].slice(0, 100),
     },
   };
 }
@@ -224,8 +213,6 @@ export function redispatchBattery(
   state: BatteryState,
   oldMw: number,
   newMw: number,
-  timestamp: number,
-  logPrice: number,
   durationHours = 0.5,
 ): { newState: BatteryState; actualMw: number } {
   const eff = state.config.efficiencyPct / 100;
@@ -243,5 +230,5 @@ export function redispatchBattery(
     totalDischargedMwh: Math.max(0, discharged),
     totalCycles: Math.max(0, charged) / state.config.capacityMwh,
   };
-  return dispatchBattery(undone, newMw, timestamp, logPrice, durationHours);
+  return dispatchBattery(undone, newMw, durationHours);
 }

@@ -52,7 +52,7 @@ export default function BmPanel({ state, onSetBmOrder }: Props) {
     <div className="bm-panel">
       <div className="bm-note">
         <strong>BM unit:</strong> your FPN (= contracted position at gate closure) is binding — deliberate deviation isn't allowed (Grid Code). Offer flexibility to NESO instead.
-        <HelpIcon text="Offer = price you want to be PAID to discharge extra MW. Bid = price you PAY to charge extra MW (a negative bid means you get paid). NESO accepts at the start of the SP when the system needs you: offers when it's short and your price is at or below the marginal (≈ SIP), bids when it's long and your bid is at or above it. Accepted volumes (BOAs) change your position — no imbalance — and are paid at your own price (pay-as-bid). Prices can be changed until gate closure (T-60)." />
+        <HelpIcon text="Offer = price at which you discharge extra MW (you are paid). Bid = price at which you charge extra MW (you pay; a negative bid means you are paid). NESO accepts at the start of the SP when the system needs you: offers when it's short and your price is at or below the marginal (≈ SIP), bids when it's long and your bid is at or above it. Accepted volumes (BOAs) change your position — no imbalance — and are paid at your own price (pay-as-bid). Prices can be changed until gate closure (T-60)." />
       </div>
       <table className="data-table bm-table">
         <thead>

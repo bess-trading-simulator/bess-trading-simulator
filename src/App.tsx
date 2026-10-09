@@ -35,7 +35,6 @@ export default function App() {
   const [view, setView] = useState<AppView>('imbalance');
   const [appMode, setAppMode] = useState<'start' | 'training' | 'sandbox'>('start');
   const [enabledViews, setEnabledViews] = useState<SandboxView[] | null>(null);
-  const [, setSandboxMarket] = useState<SandboxMarket>('GB');
   const [activeScenarioId, setActiveScenarioId] = useState<string>('live');
   const [lessonId, setLessonId] = useState<number>(1);
 
@@ -44,9 +43,8 @@ export default function App() {
     setAppMode('sandbox');
   };
 
-  const confirmSandbox = (views: SandboxView[], market: SandboxMarket, scenario: HistoricalDay | null) => {
+  const confirmSandbox = (views: SandboxView[], _market: SandboxMarket, scenario: HistoricalDay | null) => {
     setEnabledViews(views);
-    setSandboxMarket(market);
     setView(views[0]);
     if (scenario) { playScenario(scenario); setActiveScenarioId(scenario.id); }
     else { loadLive(); setActiveScenarioId('live'); }
@@ -155,7 +153,7 @@ export default function App() {
         <div className="header-left">
           <h1>BESS Trader</h1>
           <span className="hdr-sep" />
-          <nav className="hdr-tabs" data-tutorial="dayahead-tab">
+          <nav className="hdr-tabs">
             {visibleTabs.includes('imbalance') && (
               <button className={`hdr-tab ${view === 'imbalance' ? 'active' : ''}`} onClick={() => setView('imbalance')}>
                 Imbalance

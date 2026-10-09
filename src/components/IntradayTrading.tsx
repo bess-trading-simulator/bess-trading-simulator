@@ -23,9 +23,9 @@ const fmt = (v: number | undefined | null, d = 2) => (v == null || !Number.isFin
 
 const TYPE_HELP: Record<IdOrderType, string> = {
   market: 'Market: take whatever liquidity is in the book now (walks the levels, you pay the spread). Unfilled rest is cancelled.',
-  limit: 'Limit: fills immediately up to your price if the book crosses it; the rest RESTS in the book and may fill later (at your limit) — or never.',
+  limit: 'Limit: fills immediately up to your price if the book crosses it; the rest rests in the book and may fill later at your limit, or never.',
   ioc: 'Immediate-or-Cancel: like limit, but whatever can’t fill right now is cancelled.',
-  fok: 'Fill-or-Kill: fills the FULL quantity at or better than your limit right now, otherwise nothing.',
+  fok: 'Fill-or-Kill: fills the full quantity at or better than your limit right now, otherwise nothing.',
 };
 
 function vwapEstimate(book: OrderBook | null, side: OrderSide, qty: number, limit: number | null) {

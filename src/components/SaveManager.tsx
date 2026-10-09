@@ -7,7 +7,7 @@ import { Save, FolderOpen, Trash2, X } from 'lucide-react';
 interface Props {
   state: GameState;
   dataSource: string;
-  onLoad: (state: GameState) => void;
+  onLoad: (state: GameState) => boolean;
 }
 
 export default function SaveManager({ state, dataSource, onLoad }: Props) {
@@ -24,18 +24,19 @@ export default function SaveManager({ state, dataSource, onLoad }: Props) {
 
   const handleSave = () => {
     const name = saveName.trim() || `Session ${new Date().toLocaleDateString()}`;
-    saveGame(state, name, dataSource);
+    const id = saveGame(state, name, dataSource);
     setSaves(listSaves());
     setSaveName('');
-    setMessage(`Saved "${name}"`);
-    setTimeout(() => setMessage(''), 2000);
+    setMessage(id ? `Saved "${name}"` : 'Browser storage is full — not saved.');
+    if (id) setTimeout(() => setMessage(''), 2000);
   };
 
   const handleLoad = (id: string) => {
     const loaded = loadGame(id);
-    if (loaded) {
-      onLoad(loaded);
+    if (loaded && onLoad(loaded)) {
       setIsOpen(false);
+    } else {
+      setMessage('This save is from an older version and cannot be loaded.');
     }
   };
 

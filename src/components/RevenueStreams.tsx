@@ -42,7 +42,7 @@ export default function RevenueStreams({ enabledViews, onToggleView }: Props) {
                 const isSelected = s.includedIn ? enabledViews.includes(s.includedIn) : selectable && enabledViews.includes(s.view!);
                 return (
                   <button
-                    key={s.mode}
+                    key={s.id}
                     className={`launcher-card ${isSelected ? 'selected' : ''} ${s.comingSoon ? 'disabled' : ''}`}
                     onClick={() => selectable && onToggleView(s.view!)}
                     aria-pressed={isSelected}

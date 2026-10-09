@@ -2,7 +2,20 @@
 // imbalance at SIP, exchange fees and battery wear (degradation).
 
 import type { DayPnl, GameState } from './types';
+import type { TradePosition } from './ukMarket';
 import { signedMw } from './settlement';
+import { HALF_HOUR_MS, SUB_STEP_MS } from './clock';
+
+/**
+ * A BOA position only counts once its instruction has arrived (start of its
+ * 5-min interval) — before that the unit doesn't know it was called.
+ */
+export function boaArrived(state: GameState, p: TradePosition): boolean {
+  if (p.market !== 'bm') return true;
+  const a = (state.bmAcceptances ?? []).find(x => x.day === p.deliveryDay && x.sp === p.period);
+  if (!a) return true;
+  return state.clock.currentTime >= p.deliveryDay + p.period * HALF_HOUR_MS + (a.startSubIdx ?? 0) * SUB_STEP_MS;
+}
 
 const SP_HOURS = 0.5;
 const round2 = (v: number) => Math.round(v * 100) / 100;
@@ -12,7 +25,7 @@ export interface SpPnl { sp: number; da: number; id: number; bm: number; imbalan
 /** Per-SP breakdown of a day (only delivered contracts / settled imbalance count). */
 export function spPnl(state: GameState, day: number): SpPnl[] {
   return Array.from({ length: 48 }, (_, sp) => {
-    const pos = state.dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === sp && p.delivered);
+    const pos = state.dayAhead.playerSchedule.filter(p => p.deliveryDay === day && p.period === sp && p.delivered && boaArrived(state, p));
     const cash = (m: string) => pos.filter(p => p.market === m).reduce((a, p) => a + signedMw(p) * SP_HOURS * p.price, 0);
     const e = state.ledger.find(x => x.deliveryDay === day && x.period === sp);
     const imbalance = e?.imbalanceCash ?? 0;
