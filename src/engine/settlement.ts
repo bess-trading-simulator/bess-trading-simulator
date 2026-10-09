@@ -137,7 +137,8 @@ export function deviationRoom(state: GameState, day: number, sp: number): { char
  * with the new NET (contract + deviation); settled at SIP later.
  */
 export function applyDeviation(state: GameState, day: number, sp: number, signed: number, logPrice: number): GameState {
-  if (!Number.isFinite(signed)) return state;
+  // A BM unit must follow its FPN — no deliberate deviation.
+  if (!Number.isFinite(signed) || state.assetType === 'bm') return state;
   const room = deviationRoom(state, day, sp);
   const want = signed > 0 ? Math.min(signed, room.discharge) : -Math.min(-signed, room.charge);
   if (Math.abs(want) < 0.01) return state;
@@ -178,7 +179,7 @@ export function deviationRange(state: GameState, day: number, sp: number): { min
  * set point is invalid; clips it to what power/SoC allow.
  */
 export function setDeviationSetpoint(state: GameState, day: number, sp: number, setpointMw: number, logPrice: number): GameState {
-  if (!Number.isFinite(setpointMw)) return state;
+  if (!Number.isFinite(setpointMw) || state.assetType === 'bm') return state;
   const now = state.clock.currentTime;
   if (now < day + sp * 1_800_000 || now >= day + (sp + 1) * 1_800_000) return state; // only the running SP
   const k = subStepIndex(now);

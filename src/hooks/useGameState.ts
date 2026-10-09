@@ -258,10 +258,11 @@ export function useGameState() {
     // A real Elexon day becomes the auction day; the lead-in day is the real day before it.
     setLoading(true);
     const dayMs = Date.parse(day.date + 'T00:00:00Z');
-    fetchDayData(utcDateString(dayMs - DAY_MS))
-      .then(prev => (prev.isComplete ? realMarketDay(dayMs - DAY_MS, prev) : undefined))
-      .catch(() => undefined)
-      .then(lead => setState(prev => loadScenario(prev, day, lead)))
+    Promise.all([
+      fetchDayData(utcDateString(dayMs - DAY_MS)).then(d => (d.isComplete ? realMarketDay(dayMs - DAY_MS, d) : undefined)).catch(() => undefined),
+      fetchDayData(day.date).then(d => (d.isComplete ? realMarketDay(dayMs, d) : undefined)).catch(() => undefined),
+    ])
+      .then(([lead, real]) => setState(prev => loadScenario(prev, day, lead, real)))
       .finally(() => setLoading(false));
   }, []);
 

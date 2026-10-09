@@ -1,23 +1,25 @@
 import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
 import { OrderSide, GameMode } from './types';
 import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart, SUB_STEP_MS, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
-import { createPriceGenerator, generateNextHour } from './priceGenerator';
-import type { PriceGeneratorState } from './priceGenerator';
 import { createBattery } from './battery';
-import { generateFullAnalysis, imbalanceSettlementPrice, nivForecastError, mulberry32 } from './ukMarket';
+import { imbalanceSettlementPrice, nivForecastError, mulberry32 } from './ukMarket';
 import type { TradePosition } from './ukMarket';
-import { maybeGenerateEvent } from './events';
-import { modeTickEffects } from './modes';
 import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
-import { deliverPeriod, settlePeriod, applyDeviation, analysisPositions, setDeviationSetpoint, signedMw } from './settlement';
+import { deliverPeriod, settlePeriod, applyDeviation, setDeviationSetpoint, signedMw } from './settlement';
 import { dayPnl } from './pnl';
 import { createIntradayState, tickIntraday, ensureMids, placeIdOrder, cancelIdOrder, workingIdMw } from './intradayBook';
 import type { PlaceOrderInput } from './intradayBook';
 
-interface InternalState extends GameState {
-  _priceGenState: PriceGeneratorState;
+/** Price shown as "current price": today's DA price of the running SP (the SIP is only known afterwards). */
+function pricePoint(timestamp: number, price: number) {
+  return { timestamp, price, demandMw: 0, renewablePct: 0, basePrice: price, eventImpact: 0 };
+}
+
+/** Deterministic seed per delivery day for simulated market days. */
+function daySeed(day: number): number {
+  return Math.floor(day / 86_400_000) * 7919 + 17;
 }
 
 const DAY_MS = 86_400_000;
@@ -69,13 +71,12 @@ function createBmState(): BmState {
 
 export function createGameState(): GameState {
   const clock = createClock();
-  const priceGen = createPriceGenerator();
-  const { price: initialPrice, newState: newPriceGen } = generateNextHour(priceGen, clock.currentTime);
   const day = getUtcDayStart(clock.currentTime);
-  const today = syntheticMarketDay(day, priceGen.seed);
-  const next = nextDayFrom(today, priceGen.seed + 1);
+  const today = syntheticMarketDay(day, daySeed(day));
+  const next = nextDayFrom(today, daySeed(day) + 1);
+  const initialPrice = pricePoint(clock.currentTime, today.daClearing[0] ?? 0);
 
-  const state: InternalState = {
+  const state: GameState = {
     clock: { ...clock, speed: 'slow' },
     priceHistory: [initialPrice],
     currentPrice: initialPrice,
@@ -91,7 +92,6 @@ export function createGameState(): GameState {
     nextDay: next,
     intraday: createIntradayState(),
     ledger: [],
-    _priceGenState: newPriceGen,
   };
 
   return ensureMids(state);
@@ -147,13 +147,10 @@ export function replaceNextDay(state: GameState, next: MarketDay): GameState {
 }
 
 export function tickGameState(state: GameState): GameState {
-  const gs = state as InternalState;
+  const gs = state;
   const newClock = tick(gs.clock);
   if (newClock.currentTime === gs.clock.currentTime) return gs;
   const now = newClock.currentTime;
-
-  const priceGenState = gs._priceGenState ?? createPriceGenerator();
-  const { price: syntheticPrice, newState: newPriceGen } = generateNextHour(priceGenState, now);
 
   let s: GameState = { ...gs, clock: newClock as GameState['clock'] };
 
@@ -166,8 +163,8 @@ export function tickGameState(state: GameState): GameState {
   // 2) Midnight: tomorrow becomes today, a new auction opens for the day after.
   const currentDayStart = getUtcDayStart(now);
   if (currentDayStart !== prevDay) {
-    const today = s.nextDay.day === currentDayStart ? s.nextDay : syntheticMarketDay(currentDayStart, priceGenState.seed + newPriceGen.tickCount);
-    const next = nextDayFrom(today, priceGenState.seed + newPriceGen.tickCount + 1);
+    const today = s.nextDay.day === currentDayStart ? s.nextDay : syntheticMarketDay(currentDayStart, daySeed(currentDayStart));
+    const next = nextDayFrom(today, daySeed(currentDayStart + DAY_MS));
     const carried = s.dayAhead.playerSchedule.filter(p => !p.delivered && p.deliveryDay >= currentDayStart);
     // Archive the finished day's P&L before its positions/ledger are pruned.
     const finished = dayPnl(s, prevDay);
@@ -252,83 +249,25 @@ export function tickGameState(state: GameState): GameState {
       category: n.category,
     }));
 
-  // Current price shown in the cockpit: today's DA price for the running SP
-  // (the SIP is only known after the SP ends).
   const daNow = s.dayAhead.forecastPrices[currentSp];
-  const newPrice = Number.isFinite(daNow) && daNow !== 0
-    ? { ...syntheticPrice, price: daNow, basePrice: daNow }
-    : syntheticPrice;
-
-  const event = maybeGenerateEvent(now, newPrice, newPriceGen.tickCount);
-  const newEvents = [...breaking, ...(event ? [event] : []), ...s.events].slice(0, 50);
-  let battery = s.battery;
-  const dayAhead = s.dayAhead;
-  let analysis = gs.analysis;
-  const bm = s.bm;
-  const newClock_ = newClock;
-  // Triad alert (Nov-Feb, 4-7pm weekday, cold/low wind)
-  const d = new Date(newClock_.currentTime);
-  const month = d.getUTCMonth();
-  const dow = d.getUTCDay();
-  const hr = d.getUTCHours();
-  const isTriadWindow = (month >= 10 || month <= 1) && dow > 0 && dow < 6 && hr >= 16 && hr <= 19;
-  const triadAlert = isTriadWindow && newPrice.renewablePct < 0.2;
-
-  // Mode-specific effects (frequency events, BOAs, triad warnings)
-  const modeEffects = modeTickEffects(
-    { ...s, currentPrice: newPrice, battery },
-    newPriceGen.tickCount,
-  );
-
-  // Apply mode events
-  const allEvents = [...newEvents, ...modeEffects.events].slice(0, 60);
-
-  // Apply frequency response availability payment to battery revenue
-  if (modeEffects.availabilityPayment > 0) {
-    battery = {
-      ...battery,
-      totalDischargeRevenue: battery.totalDischargeRevenue + modeEffects.availabilityPayment,
-    };
-  }
-
-  // Post-trade analysis of today's settled SPs (net position per SP).
-  if (dayAhead.revealedPeriods >= 4) {
-    analysis = generateFullAnalysis(
-      analysisPositions({ ...s, battery }, currentDayStart),
-      dayAhead.forecastPrices,
-      dayAhead.sipOutturn,
-      dayAhead.niv,
-      battery.config.capacityMwh,
-      battery.config.powerRatingMw,
-      battery.config.efficiencyPct / 100,
-      dayAhead.revealedPeriods,
-    );
-  }
-
-  const priceHistory = [...gs.priceHistory, newPrice].slice(-168);
+  const newPrice = pricePoint(now, Number.isFinite(daNow) ? daNow : (gs.currentPrice?.price ?? 0));
 
   return {
     ...s,
-    // Bounded history so the autosave stays small.
+    // Bounded histories so the autosave stays small.
     trades: s.trades.slice(-600),
-    priceHistory,
+    priceHistory: [...gs.priceHistory, newPrice].slice(-96),
     currentPrice: newPrice,
-    battery,
-    events: allEvents,
-    mode: gs.mode,
-    tutorial: gs.tutorial,
-    dayAhead,
-    bm,
-    analysis,
-    triadAlert: triadAlert || !!modeEffects.triadWarning,
-    _priceGenState: newPriceGen,
-  } as InternalState;
+    events: [...breaking, ...s.events].slice(0, 50),
+    analysis: null,
+    triadAlert: false,
+  };
 }
 
 export function stepForwardAction(state: GameState): GameState {
-  const gs = state as InternalState;
+  const gs = state;
   // Use tickGameState but temporarily unpause
-  const unpaused = { ...gs, clock: { ...gs.clock, isPaused: false } } as InternalState;
+  const unpaused = { ...gs, clock: { ...gs.clock, isPaused: false } };
   const result = tickGameState(unpaused);
   // Re-apply the original pause state
   return { ...result, clock: { ...result.clock, isPaused: gs.clock.isPaused } };
@@ -738,7 +677,7 @@ export interface ScenarioInput {
  * desk signals that hint at the story), then live through it: intraday,
  * imbalance, live news (e.g. a trip) and settlement.
  */
-export function loadScenario(state: GameState, scenario: ScenarioInput, leadIn?: MarketDay): GameState {
+export function loadScenario(state: GameState, scenario: ScenarioInput, leadIn?: MarketDay, realDay?: MarketDay): GameState {
   const day = Date.parse(scenario.date + 'T00:00:00Z');
   const seed = scenario.daPrices.reduce((a, p) => a + Math.abs(Math.round(p)), 0);
   const shock = scenario.shock ? { fromSp: scenario.shock.fromSp - 1, toSp: scenario.shock.toSp - 1 } : undefined;
@@ -748,7 +687,9 @@ export function loadScenario(state: GameState, scenario: ScenarioInput, leadIn?:
     category: 'demand',
     ...(i === 0 && shock ? { shock, category: 'outage' as const } : {}),
   }));
-  const scenarioDay = withDeskForecast({ ...scenarioMarketDay(day, scenario), liveNews }, seed, scenario.deskHints);
+  // Real Elexon picks pass the full real day (real forecasts/outturns); curated ones are built from the scenario.
+  const base = realDay ?? scenarioMarketDay(day, scenario);
+  const scenarioDay = withDeskForecast({ ...base, liveNews }, seed, scenario.deskHints);
   const lead = leadIn ?? leadInDay(scenario.daPrices, day - DAY_MS, seed + 7);
   return {
     ...loadMarketDays(state, lead, scenarioDay),
