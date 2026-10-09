@@ -309,6 +309,8 @@ export function tickGameState(state: GameState): GameState {
 
   return {
     ...s,
+    // Bounded history so the autosave stays small.
+    trades: s.trades.slice(-600),
     priceHistory,
     currentPrice: newPrice,
     battery,
