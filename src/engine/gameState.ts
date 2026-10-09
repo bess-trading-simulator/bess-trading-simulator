@@ -1,10 +1,9 @@
-import type { GameState, DayAheadBid, DayAheadState, BmDirection, BmOffer, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
+import type { GameState, DayAheadBid, DayAheadState, BmState, MarketDay, DaBlockOrder, HalfHourBid, DeskHints, LiveNews, MarketEvent, AssetType, BmStandingOrder, BmAcceptance } from './types';
 import { OrderSide, GameMode } from './types';
 import { createClock, tick, getGateClosureTime, getHalfHourGateClosureTime, getSettlementPeriod, getUtcDayStart, SUB_STEP_MS, HALF_HOUR_MS, ID_GATE_CLOSURE_MS } from './clock';
 import { createBattery } from './battery';
 import { imbalanceSettlementPrice, nivForecastError, mulberry32 } from './ukMarket';
 import type { TradePosition } from './ukMarket';
-import type { BatteryConfig } from './battery';
 import { syntheticMarketDay, nextDayFrom, scenarioMarketDay, withDeskForecast, leadInDay } from './marketDay';
 import { clearHourlyAuction, sanitizeBids, clearBlocks, validateBlock, buildHalfHourForecast, clearHalfHourAuction, sanitizeHalfHourBids, powerViolations, hourlyToSp } from './dayAheadAuction';
 import { deliverPeriod, settlePeriod, applyDeviation, setDeviationSetpoint, signedMw } from './settlement';
@@ -462,11 +461,6 @@ export function submitBlockOrderAction(state: GameState, input: Omit<DaBlockOrde
 }
 
 /** Cancel a block (and its linked children) while its auction is open. */
-export function cancelBlockOrderAction(state: GameState, id: string): GameState {
-  const block = (state.dayAhead.blocks ?? []).find(b => b.id === id);
-  if (!block || !auctionOpen(state, block.auction)) return state;
-  return { ...state, dayAhead: { ...state.dayAhead, blocks: (state.dayAhead.blocks ?? []).filter(b => b.id !== id && b.parentId !== id) } };
-}
 
 /** Net DA position per SP already held for the auction's delivery day (+ = sell). */
 function deliveryDayNet(state: GameState): number[] {
@@ -544,116 +538,6 @@ export function cancelIntradayOrderAction(state: GameState, orderId: string): Ga
   return cancelIdOrder(state, orderId);
 }
 
-// Simple intraday helpers (used by the training lessons): market order on today's SP.
-export function intradayChargeAction(state: GameState, sp: number, mw: number): GameState {
-  return placeIdOrder(state, { deliveryDay: getUtcDayStart(state.clock.currentTime), period: sp, side: OrderSide.BUY, type: 'market', qtyMw: mw });
-}
-
-export function intradayDischargeAction(state: GameState, sp: number, mw: number): GameState {
-  return placeIdOrder(state, { deliveryDay: getUtcDayStart(state.clock.currentTime), period: sp, side: OrderSide.SELL, type: 'market', qtyMw: mw });
-}
-
-function seededAcceptance(seed: number): number {
-  const x = Math.sin(seed) * 10000;
-  return x - Math.floor(x);
-}
-
-function assessBmOffer(state: GameState, direction: BmDirection, period: number, price: number): { accepted: boolean; reason: string; acceptanceProbability: number; stackRank: number } {
-  const forecast = state.dayAhead.forecastPrices[period] ?? state.currentPrice?.price ?? 50;
-  const sip = period < state.dayAhead.revealedPeriods ? state.dayAhead.sipOutturn[period] : forecast;
-  const reference = (forecast + sip) / 2;
-  const premium = price - reference;
-  const niv = state.dayAhead.niv[period] ?? 0;
-  // Elexon sign: + = system short (needs generation), − = long (needs demand)
-  const systemNeedsDischarge = niv > 100;
-  const systemNeedsCharge = niv < -100;
-  const tightnessBoost = direction === 'offer' && systemNeedsDischarge ? 0.25 : direction === 'bid' && systemNeedsCharge ? 0.25 : 0;
-
-  if (direction === 'offer') {
-    if (state.battery.socPct < 20) {
-      return { accepted: false, reason: 'Rejected: not enough stored energy for a discharge instruction.', acceptanceProbability: 0, stackRank: 99 };
-    }
-    const competitiveness = Math.max(0, Math.min(1, 1 - ((premium - 5) / 90)));
-    const acceptanceProbability = Math.max(0.05, Math.min(0.95, competitiveness + tightnessBoost));
-    const stackRank = Math.max(1, Math.min(40, Math.round((1 - acceptanceProbability) * 40)));
-    const accepted = seededAcceptance(state.clock.currentTime + period + price) < acceptanceProbability;
-    return {
-      accepted,
-      reason: accepted
-        ? `Accepted: ranked ${stackRank}/40 in the simulated BM offer stack.`
-        : `Skipped: ranked ${stackRank}/40. Price was not competitive enough for this system need.`,
-      acceptanceProbability,
-      stackRank,
-    };
-  }
-
-  if (state.battery.socPct > 85) {
-    return { accepted: false, reason: 'Rejected: not enough headroom to charge.', acceptanceProbability: 0, stackRank: 99 };
-  }
-  const discount = reference - price;
-  const competitiveness = Math.max(0, Math.min(1, (discount + 10) / 80));
-  const acceptanceProbability = Math.max(0.05, Math.min(0.95, competitiveness + tightnessBoost));
-  const stackRank = Math.max(1, Math.min(40, Math.round((1 - acceptanceProbability) * 40)));
-  const accepted = seededAcceptance(state.clock.currentTime + period + price + 17) < acceptanceProbability;
-  return {
-    accepted,
-    reason: accepted
-      ? `Accepted: ranked ${stackRank}/40 in the simulated BM bid stack.`
-      : `Skipped: ranked ${stackRank}/40. Charge bid was not competitive enough.`,
-    acceptanceProbability,
-    stackRank,
-  };
-}
-
-export function submitBmOfferAction(
-  state: GameState,
-  input: { period: number; direction: BmDirection; mw: number; price: number },
-): GameState {
-  const period = Math.max(0, Math.min(47, input.period));
-  const mw = Math.max(0, Math.min(state.battery.config.powerRatingMw, input.mw));
-  if (mw <= 0) return state;
-  // Only future SPs: a position for the running/past SP would never be delivered.
-  if (period <= getSettlementPeriod(state.clock.currentTime) - 1) return state;
-
-  const assessment = assessBmOffer(state, input.direction, period, input.price);
-  const offer: BmOffer = {
-    id: `bm-${state.clock.currentTime}-${period}-${state.bm?.offers.length ?? 0}`,
-    period,
-    direction: input.direction,
-    mw,
-    price: input.price,
-    accepted: assessment.accepted,
-    submittedAt: state.clock.currentTime,
-    reason: assessment.reason,
-    acceptanceProbability: assessment.acceptanceProbability,
-    stackRank: assessment.stackRank,
-  };
-
-  const acceptedPosition: TradePosition | null = assessment.accepted ? {
-    period,
-    deliveryDay: getUtcDayStart(state.clock.currentTime),
-    market: 'bm',
-    action: input.direction === 'bid' ? 'charge' : 'discharge',
-    mw,
-    price: input.price,
-    lockedAt: state.clock.currentTime,
-  } : null;
-
-  return {
-    ...state,
-    bm: {
-      offers: [offer, ...(state.bm?.offers ?? [])].slice(0, 30),
-      accepted: assessment.accepted ? [offer, ...(state.bm?.accepted ?? [])].slice(0, 20) : (state.bm?.accepted ?? []),
-    },
-    dayAhead: {
-      ...state.dayAhead,
-      playerSchedule: acceptedPosition
-        ? [...state.dayAhead.playerSchedule, acceptedPosition]
-        : state.dayAhead.playerSchedule,
-    },
-  };
-}
-
 export interface ScenarioInput {
   id?: string;
   title?: string;
@@ -704,18 +588,3 @@ export function loadScenario(state: GameState, scenario: ScenarioInput, leadIn?:
   };
 }
 
-export function reconfigureBattery(state: GameState, config: Partial<BatteryConfig>): GameState {
-  const newConfig = { ...state.battery.config, ...config };
-  const capacityRatio = newConfig.capacityMwh / state.battery.config.capacityMwh;
-  const newSocMwh = Math.min(state.battery.currentSocMwh * capacityRatio, newConfig.capacityMwh);
-
-  return {
-    ...state,
-    battery: {
-      ...state.battery,
-      config: newConfig,
-      currentSocMwh: newSocMwh,
-      socPct: Math.round((newSocMwh / newConfig.capacityMwh) * 10000) / 100,
-    },
-  };
-}

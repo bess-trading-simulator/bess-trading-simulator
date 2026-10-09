@@ -31,23 +31,23 @@ export default function StartScreen({ onOpenSandbox }: Props) {
           <h2>Pick your markets</h2>
           <p>Choose any combination on the next screen, then trade them side by side:</p>
           <ol className="feature-steps">
-            <li><strong>Day-Ahead</strong> — build a 48-period schedule before gate closure</li>
-            <li><strong>Intraday</strong> — revise positions as forecasts update</li>
-            <li><strong>Imbalance</strong> — chase NIV, read the signals, settle at SIP</li>
+            <li><strong>Day-Ahead</strong> — bid in the 09:20 hourly and 15:30 half-hourly auctions for tomorrow</li>
+            <li><strong>Intraday</strong> — continuous order book until one hour before delivery</li>
+            <li><strong>Imbalance &amp; BM</strong> — deviate with the system at SIP, or offer to NESO as a BM unit</li>
           </ol>
         </div>
         <div className="start-card">
           <BarChart3 size={18} />
           <h2>Real market data</h2>
-          <p>Loads actual GB settlement prices, day-ahead forecasts, NIV, wind and demand from the Elexon BMRS API. Falls back to synthetic data if the API is unavailable.</p>
+          <p>Real GB days from the Elexon BMRS API: imbalance prices and NIV, Market Index Price as the day-ahead reference, wind, demand and solar. Desk forecasts are simulated with realistic errors. Falls back to synthetic data if the API is unavailable.</p>
           <LineChart size={18} style={{ marginTop: 18 }} />
           <h2>Trade &amp; review</h2>
-          <p>Half-hourly settlement, SoC and round-trip efficiency, NIV-derived cash-out, and a post-trade analysis that grades your hit-rate and forecast accuracy.</p>
+          <p>Half-hourly settlement of every MWh, SoC and efficiency limits, exchange fees and wear, a P&amp;L across all markets and a desk review against the hindsight optimum.</p>
         </div>
         <div className="start-card">
           <ShieldCheck size={18} />
           <h2>Public demo</h2>
-          <p>An educational simulator for learning how battery trading works. Not a market replica, operational trading software, or intended for live trading decisions. Some prices or forecasts may occasionally show as 0 if the Elexon API is unavailable or returns incomplete data.</p>
+          <p>An educational simulator for learning how battery trading works. Not a market replica, operational trading software, or intended for live trading decisions.</p>
         </div>
       </section>
     </main>

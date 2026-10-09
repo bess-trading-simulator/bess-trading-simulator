@@ -23,15 +23,15 @@ export default function AboutProject() {
             <div className="about-grid">
               <div>
                 <strong>Good for</strong>
-                <span>Learning BESS dispatch, scheduling, intraday revisions, SIP/NIV review, and market context.</span>
+                <span>Learning how a GB battery is traded: day-ahead auctions, intraday order book, imbalance and the Balancing Mechanism.</span>
               </div>
               <div>
                 <strong>Simplified</strong>
-                <span>Market mechanics are simplified and order books, fees, and collateral are not modelled.</span>
+                <span>Other participants, liquidity and NESO decisions are modelled, not real. Collateral, network charges and ancillary services are not modelled.</span>
               </div>
               <div>
                 <strong>Data</strong>
-                <span>Loads actual GB settlement prices, day-ahead forecasts, and NIV from the Elexon BMRS API. Falls back to synthetic data if unavailable.</span>
+                <span>Real imbalance prices, NIV and Market Index Price from the Elexon BMRS API; desk forecasts are simulated. Falls back to synthetic data if unavailable.</span>
               </div>
             </div>
           </div>

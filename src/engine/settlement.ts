@@ -236,23 +236,3 @@ export function settlePeriod(state: GameState, day: number, sp: number, sip: num
   return { ...state, battery: bookCash(bookCash(state.battery, imbalanceCash), degradationCash), trades, ledger: upsert(state.ledger, entry) };
 }
 
-/**
- * Per-SP summary of TODAY for post-trade analysis: one net position per SP with
- * the effective price (all cash of that SP / metered MWh).
- */
-export function analysisPositions(state: GameState, day: number): TradePosition[] {
-  const out: TradePosition[] = [];
-  for (const e of state.ledger) {
-    if (e.deliveryDay !== day || Math.abs(e.meteredMw) < 0.01) continue;
-    const mwh = Math.abs(e.meteredMw) * SP_HOURS;
-    const cash = e.contractCash + e.imbalanceCash;
-    const action = e.meteredMw > 0 ? 'discharge' : 'charge';
-    const price = action === 'discharge' ? cash / mwh : -cash / mwh;
-    const hasId = state.dayAhead.playerSchedule.some((p) => p.deliveryDay === day && p.period === e.period && p.market === 'id');
-    const market: TradePosition['market'] = Math.abs(e.deviationMw) > 0.01 && Math.abs(e.contractedMw) < 0.01
-      ? 'spot'
-      : hasId ? 'id' : 'da';
-    out.push({ period: e.period, deliveryDay: day, market, action, mw: Math.abs(e.meteredMw), price: round2(price), lockedAt: day, delivered: true });
-  }
-  return out;
-}

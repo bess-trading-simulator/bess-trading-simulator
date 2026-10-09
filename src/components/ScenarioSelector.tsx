@@ -112,7 +112,7 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
         teachingPoints: [
           'This is real market data — prices reflect actual supply, demand, and weather conditions',
           `Peak SIP was £${maxPrice.toFixed(2)}, trough was £${minPrice.toFixed(2)} — a spread of £${(maxPrice - minPrice).toFixed(2)}/MWh`,
-          'Compare your trades against the SIP outturn in the Analysis tab',
+          'Compare your result with the hindsight optimum in Desk → Review and the P&L tab',
         ],
       };
 
@@ -182,7 +182,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                         <span>Wind: {Math.round(day.windPct * 100)}%</span>
                         <span>Optimal: £{day.optimalRevenue.toLocaleString()}</span>
                       </div>
-                      {day.isTriadRisk && <span className="scenario-triad-badge">TRIAD RISK</span>}
                     </button>
                   ))}
                 </div>
@@ -206,7 +205,6 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
                 <div className="scenario-detail-stats">
                   <div className="stat-pill">Wind: {Math.round(selected.windPct * 100)}%</div>
                   <div className="stat-pill">Optimal: £{selected.optimalRevenue.toLocaleString()}</div>
-                  {selected.isTriadRisk && <div className="stat-pill triad">TRIAD RISK</div>}
                 </div>
                 <div className="scenario-lessons">
                   <h4><BookOpen size={14} /> How this scenario runs</h4>
@@ -225,7 +223,7 @@ export default function ScenarioSelector({ onSelectScenario, onSelectLive, activ
             {tab === 'elexon' && (
               <div className="elexon-fetch-section">
                 <p className="scenario-intro">
-                  Fetch real GB market data from the Elexon BMRS API. Pick any date (at least 3 days ago for complete data).
+                  Fetch real GB market data from the Elexon BMRS API. Pick any date (up to two days ago — older data is complete).
                   DA prices, SIP outturns, and NIV will be loaded for that day.
                 </p>
 
