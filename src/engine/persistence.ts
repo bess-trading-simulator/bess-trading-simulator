@@ -40,7 +40,7 @@ export function listSaves(): SaveSlot[] {
 }
 
 function updateIndex(saves: SaveSlot[]) {
-  localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(saves));
+  try { localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(saves)); } catch { /* ignore */ }
 }
 
 export function saveGame(state: GameState, name: string, dataSource: string): string {
@@ -62,7 +62,11 @@ export function saveGame(state: GameState, name: string, dataSource: string): st
   const toSave: GameState & { _priceGenState?: unknown } = { ...state };
   delete toSave._priceGenState;
 
-  localStorage.setItem(SAVE_PREFIX + id, JSON.stringify(toSave));
+  try {
+    localStorage.setItem(SAVE_PREFIX + id, JSON.stringify(toSave));
+  } catch {
+    return ''; // storage full — caller shows that nothing was saved
+  }
 
   const saves = listSaves();
   saves.unshift(slot);
@@ -133,14 +137,19 @@ export function cacheElexonDay(date: string, data: { daPrices: number[]; sipPric
   const cache = getCachedElexonData();
   cache[date] = { ...data, fetchedAt: Date.now() };
 
-  // Keep max 30 days cached
+  // Keep the 10 most recent days cached
   const dates = Object.keys(cache).sort();
-  while (dates.length > 30) {
+  while (dates.length > 10) {
     const oldest = dates.shift()!;
     delete cache[oldest];
   }
 
-  localStorage.setItem(ELEXON_CACHE_KEY, JSON.stringify(cache));
+  // The cache is a convenience: never let a full localStorage break a live load.
+  try {
+    localStorage.setItem(ELEXON_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    try { localStorage.removeItem(ELEXON_CACHE_KEY); } catch { /* ignore */ }
+  }
 }
 
 export function getCachedDay(date: string) {

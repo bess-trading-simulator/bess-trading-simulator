@@ -91,6 +91,8 @@ export function useGameState() {
       .catch(err => {
         console.warn('Elexon API unavailable, using synthetic data:', err.message);
         setRealMode(false);
+        // Start a fresh simulated session rather than silently continuing an old save.
+        setState(createGameState());
       })
       .finally(() => setLoading(false));
   }, []);
