@@ -256,7 +256,9 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
                 </div>
                 {sel.open && type !== 'market' && qtyNum > 0 && est.mw < 0.05 && (
                   <div className="idb-hint idb-hint-passive">
-                    ⚠ Fills nothing now — your limit is {side === OrderSide.BUY ? 'below the best ask' : 'above the best bid'}. The order rests in the book until the market reaches it, and expires at the gate (T-60). To trade now: Market, or set the limit at the {side === OrderSide.BUY ? 'ask' : 'bid'} (click a price level).
+                    ⚠ Fills nothing now — you {side === OrderSide.BUY ? 'buy at the ask, and your limit' : 'sell at the bid, and your limit'} (£{Number.isFinite(limitNum) ? limitNum.toFixed(2) : '—'}) is {side === OrderSide.BUY
+                      ? `below the best ask (£${sel.book?.asks[0]?.price.toFixed(2) ?? '—'})`
+                      : `above the best bid (£${sel.book?.bids[0]?.price.toFixed(2) ?? '—'})`}. The order rests in the book until the market reaches it, and expires at the gate (T-60). To trade now: Market, or click the {side === OrderSide.BUY ? 'ask' : 'bid'} price level.
                   </div>
                 )}
                 <button className={`btn btn-submit idb-submit ${side === OrderSide.BUY ? 'buy' : 'sell'}`} disabled={!sel.open || !(qtyNum > 0) || (type !== 'market' && !Number.isFinite(limitNum))} onClick={place}>
