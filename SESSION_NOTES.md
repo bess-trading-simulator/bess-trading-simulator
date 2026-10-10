@@ -656,3 +656,14 @@ Second audit round (engine sim 100 runs + UI sweep): all S4.18 fixes verified (n
 - Copy pass (weniger "AI-laut"): no CAPS shouting (CLEARING/YOUR/WITH/PAID…), no hype ("Excellent", "Classic", "Tests your patience", "Professional desks typically…"), "Charge!" news headline neutralised, hero/launcher texts tightened.
 - Dead code: cycleLog/CycleEntry log (bloated every autosave), dispatch logPrice/timestamp params, GameMode (strategies now use plain ids), clock getHour/getMinute/isWeekend/formatTime/getDayOfWeek, marketDay.todayFromState, historicalDays peakDemandGw/isTriadRisk/optimalRevenue, SaveSlot.mode, data-tutorial attr, empty CSS section headers + dead keyframes.
 Tests: 78. Lint: 0. Browser: full flows re-run incl. Academy switch regression, save/load, light mode — clean.
+
+## S4.20 — Intraday order book: deep audit + retune (2026-10-10)
+Adversarial audit of the ID book (scripts in the session scratchpad, id-audit/): matching mechanics all correct — VWAP level-walking, limit/IOC/FOK semantics incl. exact-qty FOK, resting pay-as-bid at own limit, cancel/expiry at T-60, power room incl. resting + pending 30-min volume, wash trade costs exactly spread+fees, D+1 gating leak-free, shock repricing. Fixed what it found:
+- SIP arbitrage exploit (was +£2.9k/day risk-free): the mid converged only ~33 % toward SIP at the gate and the residual was learnable (beta +1.22). Now the mid converges to the EXPECTED cash-out (w = 0.9·e^(−h/7)) and a per-product, never-priced SIP basis (triangular ±£22) separates expectation from realisation. Residual beta 0.14; the late-ID-vs-SIP trade is now a risky position with a small premium (2/8 test days negative) instead of an oracle.
+- Spread/depth term structure was inverted: now wide/thin far from delivery, tightening into the last hours (≈£7 @24h → £3 @1.5h spread; depth 122→139 MW), like EPEX GB.
+- 5-min sub-steps no longer refill consumed liquidity at a pinned mid (taken persists until the next market tick).
+- Resting orders: price-time priority per product+side; counter-flow drawn once per queue; crossed fills deplete the book for later orders.
+- FOK tolerance 0.05 MW → exact.
+- Intraday orders/fills now pruned at midnight (same 2-day window as the ledger; autosave growth).
+- dayPnl documented as running-day-only (past days: pnlHistory).
+Deliberately kept: contracting undeliverable volume is allowed (exchanges don't check physics; it settles as imbalance, the Desk warns); T-60 close (= FPN freeze; real GB continuous trades to ~T-15); half-hourly products only; 5-level synthetic book. Tests 78, lint 0, build + browser clean.

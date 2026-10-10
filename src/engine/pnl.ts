@@ -35,6 +35,11 @@ export function spPnl(state: GameState, day: number): SpPnl[] {
   });
 }
 
+/**
+ * Valid for the RUNNING day (and tomorrow). For finished days use
+ * `state.pnlHistory`: the rollover prunes delivered positions, so the
+ * contract legs of a past day would read as 0 here.
+ */
 export function dayPnl(state: GameState, day: number): DayPnl {
   const rows = spPnl(state, day);
   const sum = (f: (r: SpPnl) => number) => round2(rows.reduce((a, r) => a + f(r), 0));

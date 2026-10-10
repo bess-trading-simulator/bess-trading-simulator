@@ -155,6 +155,12 @@ export function tickGameState(state: GameState): GameState {
       ledger: s.ledger.filter(e => e.deliveryDay >= currentDayStart - DAY_MS),
       bmBook: (s.bmBook ?? []).filter(b => b.day >= currentDayStart),
       bmAcceptances: (s.bmAcceptances ?? []).filter(a => a.day >= currentDayStart - DAY_MS),
+      // Same retention window for the intraday tape (orders would otherwise grow forever).
+      intraday: {
+        ...s.intraday,
+        orders: s.intraday.orders.filter(o => o.deliveryDay >= currentDayStart - DAY_MS),
+        fills: s.intraday.fills.filter(f => f.deliveryDay >= currentDayStart - DAY_MS),
+      },
     };
   }
 
