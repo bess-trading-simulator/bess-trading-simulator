@@ -98,20 +98,34 @@ function hoursToDelivery(now: number, day: number, sp: number): number {
   return Math.max(0, (productStart(day, sp) - now) / HOUR_MS);
 }
 
-function anchorPrice(da: number, sip: number, h: number, shock: ShockState = 'none'): number {
+/**
+ * The ID market converges to the EXPECTED cash-out; the realised SIP is set by
+ * the BM's marginal actions and deviates from that expectation by a basis the
+ * market can never price. Without it, late ID vs SIP would be an oracle trade.
+ */
+function sipBasis(key: string): number {
+  const rng = mulberry32(hashSeed(key, 0) + 991);
+  return (rng() - 0.5) * 22 + (rng() - 0.5) * 22; // triangular ±£22, sd ≈ £9
+}
+
+function anchorPrice(da: number, sip: number, h: number, shock: ShockState, key: string): number {
   // An unforeseen shock (e.g. a trip) is invisible to the market until the news
   // breaks — then intraday reprices hard toward the new system state.
   if (shock === 'hidden') return da;
-  if (shock === 'known') return da + 0.8 * (sip - da);
-  // Otherwise information about the imbalance outcome arrives as delivery approaches.
-  const w = 1 / (1 + h / 2);
-  return da + 0.5 * w * (sip - da);
+  const expected = sip + sipBasis(key); // what the market converges to ≠ realised SIP
+  if (shock === 'known') return da + Math.max(0.85, 0.9 * Math.exp(-h / 7)) * (expected - da);
+  // Information about the imbalance outcome arrives as delivery approaches: far
+  // out the market knows little beyond the DA price, near the gate the mid sits
+  // close to the expected cash-out.
+  const w = 0.9 * Math.exp(-h / 7);
+  return da + w * (expected - da);
 }
 
 function liquidity(sp: number, h: number): number {
   const night = sp < 12 ? 0.6 : 1; // 00:00-06:00 thinner
-  const nearGate = h < 3 ? 0.55 + 0.15 * h : 1;
-  return night * nearGate;
+  // Depth builds toward delivery (GB continuous volume concentrates in the last hours).
+  const ramp = 1.35 - 0.8 * (h / (h + 6));
+  return night * ramp;
 }
 
 /** Build the order book of a product at time `now` (pure; depends on mid + time). */
@@ -120,14 +134,17 @@ export function buildBook(state: GameState, day: number, sp: number, now = state
   if (!ref) return null;
   const key = productKey(day, sp);
   const h = hoursToDelivery(now, day, sp);
-  const mid = state.intraday.mids[key] ?? anchorPrice(ref.da, ref.sip, h, ref.shock);
+  const mid = state.intraday.mids[key] ?? anchorPrice(ref.da, ref.sip, h, ref.shock, key);
   const liq = liquidity(sp, h);
-  const halfSpread = round2((0.4 + 0.012 * Math.abs(mid)) * (1 + 2 / (1 + h)) / Math.max(0.5, liq));
+  // Wide and thin far from delivery, tightening into the last hours (like EPEX GB).
+  const halfSpread = round2((0.4 + 0.012 * Math.abs(mid)) * (0.8 + h / 10) / Math.max(0.5, liq));
   const step = 0.5 + 0.004 * Math.abs(mid);
   const rng = mulberry32(hashSeed(key, now));
+  // Liquidity you consumed stays consumed until the next market tick (tickIntraday
+  // resets it) — a 5-min sub-step must not refill the book at a pinned mid.
   const taken = state.intraday.taken[key];
-  let takenBid = taken && taken.time === now ? taken.bid : 0;
-  let takenAsk = taken && taken.time === now ? taken.ask : 0;
+  let takenBid = taken?.bid ?? 0;
+  let takenAsk = taken?.ask ?? 0;
   const bids: BookLevel[] = [];
   const asks: BookLevel[] = [];
   for (let i = 0; i < BOOK_LEVELS; i++) {
@@ -201,6 +218,7 @@ function applyFills(
   order: IdOrder,
   fills: { mw: number; price: number }[],
   aggressor: boolean,
+  consumesBook: boolean = aggressor,
 ): GameState {
   if (fills.length === 0) return state;
   const now = state.clock.currentTime;
@@ -218,11 +236,10 @@ function applyFills(
     side: order.side, mw: f.mw, price: f.price, time: now, aggressor,
   }));
   const key = productKey(order.deliveryDay, order.period);
-  const prevTaken = state.intraday.taken[key];
-  const base = prevTaken && prevTaken.time === now ? prevTaken : { time: now, bid: 0, ask: 0 };
+  const base = state.intraday.taken[key] ?? { time: now, bid: 0, ask: 0 };
   const takenMw = fills.reduce((a, f) => a + f.mw, 0);
-  const taken = aggressor
-    ? { ...state.intraday.taken, [key]: order.side === OrderSide.BUY ? { ...base, ask: base.ask + takenMw } : { ...base, bid: base.bid + takenMw } }
+  const taken = consumesBook
+    ? { ...state.intraday.taken, [key]: order.side === OrderSide.BUY ? { ...base, time: now, ask: base.ask + takenMw } : { ...base, time: now, bid: base.bid + takenMw } }
     : state.intraday.taken;
   return {
     ...state,
@@ -283,7 +300,7 @@ export function placeIdOrder(state: GameState, input: PlaceOrderInput): GameStat
   const crossLimit = order.type === 'market' ? null : order.limitPrice;
   const walk = walkBook(levels, order.side, order.qtyMw, crossLimit);
 
-  if (order.type === 'fok' && walk.filled < order.qtyMw - 0.05) {
+  if (order.type === 'fok' && walk.filled < order.qtyMw - 1e-6) {
     order = { ...order, status: 'cancelled', note: 'FOK: not enough liquidity at your limit — nothing filled' };
     return { ...state, intraday: { ...state.intraday, seq, orders: [...state.intraday.orders, order] } };
   }
@@ -342,12 +359,15 @@ export function tickIntraday(state: GameState): GameState {
     const sigma = (1 + 0.02 * Math.abs(ref.da)) * (0.8 + 1.2 / (1 + h));
     const dev = 0.85 * (devs[key] ?? 0) + (rng() - 0.5) * 2 * sigma;
     devs[key] = dev;
-    mids[key] = round2(anchorPrice(ref.da, ref.sip, h, ref.shock) + dev);
+    mids[key] = round2(anchorPrice(ref.da, ref.sip, h, ref.shock, key) + dev);
     midHistory[key] = [...(midHistory[key] ?? []), mids[key]].slice(-HISTORY_LEN);
   }
 
   let next: GameState = { ...state, intraday: { ...state.intraday, mids, devs, midHistory, taken: {} } };
 
+  // 1) Crossed fills: the market moved through a resting limit — fill at the
+  //    order's limit (pay-as-bid). Processed in submission order; the book is
+  //    rebuilt per order, so earlier fills deplete it for later ones.
   for (const o of state.intraday.orders) {
     if (o.status !== 'working' && o.status !== 'partial') continue;
     if (!isProductOpen(next, o.deliveryDay, o.period)) {
@@ -357,27 +377,44 @@ export function tickIntraday(state: GameState): GameState {
     const book = buildBook(next, o.deliveryDay, o.period);
     if (!book || o.limitPrice === null) continue;
     const remaining = round1(o.qtyMw - o.filledMw);
-    // 1) Market moved through the limit: fill at the order's limit (pay-as-bid).
     const crossing = o.side === OrderSide.BUY ? book.asks : book.bids;
     const crossed = walkBook(crossing, o.side, remaining, o.limitPrice);
-    let fills = crossed.fills.map((f) => ({ mw: f.mw, price: o.limitPrice! }));
-    const left = round1(remaining - crossed.filled);
-    // 2) Passive fill against simulated counter-flow; likelier the closer to the touch.
-    if (left > 0) {
-      const touch = o.side === OrderSide.BUY ? (book.bids[0]?.price ?? book.mid) : (book.asks[0]?.price ?? book.mid);
-      const behind = o.side === OrderSide.BUY ? touch - o.limitPrice : o.limitPrice - touch; // >0 = behind the touch
-      const p = behind <= 0 ? 0.55 : 0.4 * Math.exp(-behind / Math.max(0.5, book.halfSpread));
-      const rng = mulberry32(hashSeed(o.id, now) + 5);
-      if (rng() < p) {
-        const mw = Math.max(0.1, round1(left * (0.3 + 0.7 * rng())));
-        fills = [...fills, { mw: Math.min(mw, left), price: o.limitPrice }];
-      }
-    }
-    if (fills.length) {
+    if (crossed.fills.length) {
+      const fills = crossed.fills.map((f) => ({ mw: f.mw, price: o.limitPrice! }));
       const updated = withOrderFill(o, fills, now);
-      next = applyFills(next, updated, fills, false);
+      next = applyFills(next, updated, fills, false, true);
       next = updateOrder(next, updated);
     }
+  }
+
+  // 2) Passive fills against simulated counter-flow: price-time priority — per
+  //    product and side only the best-priced (then earliest) resting order sees
+  //    the flow this tick, and whether flow arrives is drawn once per queue.
+  const queues = new Map<string, IdOrder>();
+  for (const o of next.intraday.orders) {
+    if (o.status !== 'working' && o.status !== 'partial') continue;
+    if (o.limitPrice === null || !isProductOpen(next, o.deliveryDay, o.period)) continue;
+    const qk = `${productKey(o.deliveryDay, o.period)}#${o.side}`;
+    const best = queues.get(qk);
+    const better = !best
+      || (o.side === OrderSide.BUY ? o.limitPrice > best.limitPrice! : o.limitPrice < best.limitPrice!);
+    if (better) queues.set(qk, o); // ties keep the earlier order (submission order)
+  }
+  for (const [qk, o] of queues) {
+    const book = buildBook(next, o.deliveryDay, o.period);
+    if (!book) continue;
+    const left = round1(o.qtyMw - o.filledMw);
+    if (left <= 0) continue;
+    const touch = o.side === OrderSide.BUY ? (book.bids[0]?.price ?? book.mid) : (book.asks[0]?.price ?? book.mid);
+    const behind = o.side === OrderSide.BUY ? touch - o.limitPrice! : o.limitPrice! - touch; // >0 = behind the touch
+    const p = behind <= 0 ? 0.55 : 0.4 * Math.exp(-behind / Math.max(0.5, book.halfSpread));
+    const rng = mulberry32(hashSeed(qk, now) + 5);
+    if (rng() >= p) continue; // no counter-flow for this queue this tick
+    const mw = Math.min(left, Math.max(0.1, round1(left * (0.3 + 0.7 * rng()))));
+    const fills = [{ mw, price: o.limitPrice! }];
+    const updated = withOrderFill({ ...next.intraday.orders.find(x => x.id === o.id)! }, fills, now);
+    next = applyFills(next, updated, fills, false, false);
+    next = updateOrder(next, updated);
   }
   return next;
 }
@@ -399,7 +436,7 @@ export function ensureMids(state: GameState): GameState {
     if (mids[key] !== undefined) continue;
     const ref = productRef(state, day, sp)!;
     if (!changed) { mids = { ...mids }; changed = true; }
-    mids[key] = round2(anchorPrice(ref.da, ref.sip, hoursToDelivery(now, day, sp), ref.shock));
+    mids[key] = round2(anchorPrice(ref.da, ref.sip, hoursToDelivery(now, day, sp), ref.shock, key));
   }
   return changed ? { ...state, intraday: { ...state.intraday, mids } } : state;
 }
