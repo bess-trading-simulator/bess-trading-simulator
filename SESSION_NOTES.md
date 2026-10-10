@@ -667,3 +667,6 @@ Adversarial audit of the ID book (scripts in the session scratchpad, id-audit/):
 - Intraday orders/fills now pruned at midnight (same 2-day window as the ledger; autosave growth).
 - dayPnl documented as running-day-only (past days: pnlHistory).
 Deliberately kept: contracting undeliverable volume is allowed (exchanges don't check physics; it settles as imbalance, the Desk warns); T-60 close (= FPN freeze; real GB continuous trades to ~T-15); half-hourly products only; 5-level synthetic book. Tests 78, lint 0, build + browser clean.
+
+## S4.21 — ID ticket: passive orders made explicit (2026-10-10)
+UX trap: the buy ticket prefills the limit at the best BID (passive), so "Buy" placed a resting order that could expire unfilled at T-60 — users read it as a failed purchase. The button now says what will happen ("Buy X MW now", "Buy ≈Y MW now, rest rests", "Place resting buy …", "Product closed (T-60)") and an orange hint explains a 0-crossable limit + how to trade now (Market, or click a price level).

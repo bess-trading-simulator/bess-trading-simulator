@@ -2671,3 +2671,5 @@ body {
   .academy-nav { position: static; }
   .academy-lesson { grid-template-columns: 1fr; }
 }
+
+.idb-hint-passive { color: var(--orange); }
