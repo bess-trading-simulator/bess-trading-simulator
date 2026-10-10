@@ -49,6 +49,8 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
   const [dayChoice, setDayChoice] = useState<'today' | 'tomorrow'>('today');
   const day = dayChoice === 'tomorrow' && tomorrowOpen ? nextDay.day : today;
   const [selected, setSelected] = useState<number | null>(null);
+  // SP under the mouse in the product table — highlights its bar in the chart.
+  const [hoverSp, setHoverSp] = useState<number | null>(null);
   const [side, setSide] = useState<OrderSide>(OrderSide.BUY);
   const [type, setType] = useState<IdOrderType>('limit');
   const [qty, setQty] = useState('10');
@@ -202,7 +204,7 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
                 />
                 <Bar yAxisId="p" dataKey="da" name="DA" radius={[2, 2, 0, 0]}>
                   {chartData.map((c, i) => (
-                    <Cell key={i} fill={c.net < 0 ? '#007be2' : c.net > 0 ? '#ff874b' : '#9ca3af'} fillOpacity={selected === i ? 1 : c.net !== 0 ? 0.75 : 0.35} />
+                    <Cell key={i} fill={c.net < 0 ? '#007be2' : c.net > 0 ? '#ff874b' : hoverSp === i || selected === i ? '#e5e7eb' : '#9ca3af'} fillOpacity={hoverSp === i || selected === i ? 1 : c.net !== 0 ? 0.75 : 0.35} />
                   ))}
                 </Bar>
                 <Line yAxisId="p" dataKey="mid" name="ID mid" stroke="#76b8ef" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
@@ -290,7 +292,9 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
                 <tr key={r.sp}
                   className={`${selected === r.sp ? 'row-hovered' : ''} ${r.open ? '' : 'muted'}`}
                   style={{ cursor: r.open ? 'pointer' : 'default' }}
-                  onClick={() => r.open && choose(r.sp)}>
+                  onClick={() => r.open && choose(r.sp)}
+                  onMouseEnter={() => setHoverSp(r.sp)}
+                  onMouseLeave={() => setHoverSp(h => (h === r.sp ? null : h))}>
                   <td>{spLabel(r.sp)}</td>
                   <td>{fmt(r.da)}</td>
                   <td>{r.book ? <span>{fmt(r.book.bids[0]?.price)} <small className="muted">{fmt(r.book.bids[0]?.mw, 0)}</small></span> : '—'}</td>
