@@ -254,8 +254,17 @@ export default function IntradayTrading({ state, onPlaceOrder, onCancelOrder }: 
                 <div className="idb-hint">
                   Now crossable: {est.mw.toFixed(1)} MW{est.mw > 0 ? ` @ avg £${est.price.toFixed(2)}` : ''} · room {room.toFixed(1)} MW (net {sel.net >= 0 ? '+' : ''}{sel.net.toFixed(0)} MW, limit ±{P})
                 </div>
+                {sel.open && type !== 'market' && qtyNum > 0 && est.mw < 0.05 && (
+                  <div className="idb-hint idb-hint-passive">
+                    ⚠ Fills nothing now — your limit is {side === OrderSide.BUY ? 'below the best ask' : 'above the best bid'}. The order rests in the book until the market reaches it, and expires at the gate (T-60). To trade now: Market, or set the limit at the {side === OrderSide.BUY ? 'ask' : 'bid'} (click a price level).
+                  </div>
+                )}
                 <button className={`btn btn-submit idb-submit ${side === OrderSide.BUY ? 'buy' : 'sell'}`} disabled={!sel.open || !(qtyNum > 0) || (type !== 'market' && !Number.isFinite(limitNum))} onClick={place}>
-                  {side === OrderSide.BUY ? 'Buy' : 'Sell'} {qtyNum > 0 ? qtyNum : ''} MW · {type.toUpperCase()}
+                  {!sel.open ? 'Product closed (T-60)'
+                    : type === 'market' ? `${side === OrderSide.BUY ? 'Buy' : 'Sell'} ${qtyNum > 0 ? qtyNum : ''} MW now · MARKET`
+                    : est.mw >= qtyNum - 0.05 ? `${side === OrderSide.BUY ? 'Buy' : 'Sell'} ${qtyNum > 0 ? qtyNum : ''} MW now · ${type.toUpperCase()}`
+                    : est.mw > 0 ? `${side === OrderSide.BUY ? 'Buy' : 'Sell'} ≈${est.mw.toFixed(1)} MW now, rest ${type === 'limit' ? 'rests' : 'cancels'} · ${type.toUpperCase()}`
+                    : `Place resting ${side === OrderSide.BUY ? 'buy' : 'sell'} ${qtyNum > 0 ? qtyNum : ''} MW · ${type.toUpperCase()}`}
                 </button>
               </>
             ) : (
