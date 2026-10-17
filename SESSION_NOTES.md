@@ -670,3 +670,10 @@ Deliberately kept: contracting undeliverable volume is allowed (exchanges don't 
 
 ## S4.21 — ID ticket: passive orders made explicit (2026-10-10)
 UX trap: the buy ticket prefills the limit at the best BID (passive), so "Buy" placed a resting order that could expire unfilled at T-60 — users read it as a failed purchase. The button now says what will happen ("Buy X MW now", "Buy ≈Y MW now, rest rests", "Place resting buy …", "Product closed (T-60)") and an orange hint explains a 0-crossable limit + how to trade now (Market, or click a price level).
+Follow-ups: the hint names the concrete numbers (your limit vs the current best ask/bid) so the
+"price is above my limit" confusion (limit vs MID) resolves itself; hovering a product row in the
+position table highlights its bar in the chart above (and vice versa via click/selection).
+Tests 78, lint 0, verified in the browser (scratchpad pw/hover.mjs, pw/ticket.mjs).
+Deploy state: commits up to 417ca92 are live on bess-trading-simulator.com; the three ticket/hover
+commits (f9a2e52, 21e611b, d350cbe) are on main but NOT yet deployed — next step: run the
+"Deploy to All-Inkl" workflow when Tim gives the word.
