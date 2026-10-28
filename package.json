@@ -1,5 +1,6 @@
 {
-  "name": "trading-sim",
+  "name": "bess-trading-simulator",
+  "description": "Educational GB battery trading simulator (day-ahead, intraday, imbalance, BM) on Elexon data",
   "private": true,
   "version": "0.0.0",
   "type": "module",

@@ -19,12 +19,12 @@ https://bess-trading-simulator.com
 
 ## Features
 
-- **Pick your markets** — any combination of Day-Ahead, Intraday and Imbalance/BM
-- **Live Elexon data** — real SIP and NIV, Market Index Price as day-ahead reference, wind/demand/solar; synthetic fallback
-- **Desk forecast** — simulated forecasts with realistic errors and signals (gas, wind revision, temperature, news/REMIT)
-- **Settlement ledger** — every SP is settled: contracts at their prices, the rest at the SIP
-- **Desk** — forward risk book (positions, SoC, imbalance risk, gate times) and a review with benchmarks and mistake patterns
-- **Academy** — five guided lessons on the real market views (settlement, day-ahead, intraday, imbalance, BM)
+- Pick your markets: any combination of Day-Ahead, Intraday and Imbalance/BM
+- Live Elexon data: real SIP and NIV, Market Index Price as day-ahead reference, wind/demand/solar; synthetic fallback
+- Desk forecast: simulated forecasts with realistic errors and signals (gas, wind revision, temperature, news/REMIT)
+- Settlement ledger: every SP is settled, contracts at their prices, the rest at the SIP
+- Desk: forward risk book (positions, SoC, imbalance risk, gate times) and a review with benchmarks and mistake patterns
+- Academy: five guided lessons on the real market views (settlement, day-ahead, intraday, imbalance, BM)
 - Curated scenarios (incl. live news and interconnector trips) and an Elexon date picker
 - UK wall-clock time, dark/light theme, save/load, glossary
 
@@ -41,6 +41,8 @@ No API keys needed. Uses the public Elexon BMRS endpoint (`data.elexon.co.uk/bmr
 
 ## Running Locally
 
+Requires Node.js 20.19 or later.
+
 ```bash
 npm install
 npm run dev
@@ -56,9 +58,9 @@ npm test
 
 Built with Vite. Static output in `dist/`. Includes `.htaccess` for Apache SPA routing.
 
-- Build: `npm run build`
-- Output: `dist`
-- Upload `dist/` contents to web root via FTP
+Deploys run through the manual GitHub Actions workflow "Deploy to All-Inkl" (`.github/workflows/deploy-allinkl.yml`). It builds the app and uploads `dist/` via FTPS. Required repository secrets: `FTP_HOST`, `FTP_USER`, `FTP_PASSWORD`, `FTP_TARGET_DIR`.
+
+To deploy by hand, run `npm run build` and upload the contents of `dist/` to the web root.
 
 ## Structure
 
